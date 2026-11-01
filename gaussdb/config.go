@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -475,25 +476,39 @@ func fingerprintCapabilities(db *sql.DB) (semver.Version, bool, error) {
 		return semver.Version{}, false, fmt.Errorf("error PostgreSQL version: %w", err)
 	}
 
-	// PostgreSQL 9.2.21 on x86_64-apple-darwin16.5.0, compiled by Apple LLVM version 8.1.0 (clang-802.0.42), 64-bit
-	// PostgreSQL 9.6.7, compiled by Visual C++ build 1800, 64-bit
-	// (openGauss 5.0.0 build ) compiled at 2023-04-18 09:47:39 ...
+	return parseServerVersion(pgVersion)
+}
+
+// versionTokenPattern matches the leading numeric version inside one
+// space-separated word of the version() output: "16.15", "5.0.0", or
+// "V506.0.0.SPC0500" — enterprise GaussDB kernel tags carry a suffix after
+// the third number.
+var versionTokenPattern = regexp.MustCompile(`^[vV]?(\d+(?:\.\d+){1,2})`)
+
+// parseServerVersion extracts the server version and GaussDB flavor from the
+// output of SELECT version(). The number is not always the second field:
+// community openGauss answers "(openGauss 5.0.0 build ) ...", enterprise
+// GaussDB "(GaussDB Kernel V506.0.0.SPC0500 ...)", so the first
+// version-looking token wins.
+func parseServerVersion(pgVersion string) (semver.Version, bool, error) {
 	fields := strings.FieldsFunc(pgVersion, func(c rune) bool {
 		return unicode.IsSpace(c) || c == ','
 	})
-	if len(fields) < 2 {
-		return semver.Version{}, false, fmt.Errorf("error determining the server version: %q", pgVersion)
+	for _, field := range fields {
+		m := versionTokenPattern.FindStringSubmatch(field)
+		if m == nil {
+			continue
+		}
+		version, err := semver.ParseTolerant(m[1])
+		if err != nil {
+			return semver.Version{}, false, fmt.Errorf("error parsing version: %w", err)
+		}
+		lower := strings.ToLower(pgVersion)
+		isGaussDB := strings.Contains(lower, "opengauss") || strings.Contains(lower, "gaussdb")
+		return version, isGaussDB, nil
 	}
 
-	version, err := semver.ParseTolerant(fields[1])
-	if err != nil {
-		return semver.Version{}, false, fmt.Errorf("error parsing version: %w", err)
-	}
-
-	lower := strings.ToLower(pgVersion)
-	isGaussDB := strings.Contains(lower, "opengauss") || strings.Contains(lower, "gaussdb")
-
-	return version, isGaussDB, nil
+	return semver.Version{}, false, fmt.Errorf("error determining the server version: %q", pgVersion)
 }
 
 func openImpersonatedGCPDBConnection(ctx context.Context, dsn string, targetServiceAccountEmail string) (*sql.DB, error) {
