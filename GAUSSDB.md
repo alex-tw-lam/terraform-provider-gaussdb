@@ -8,27 +8,25 @@ lib/pq cannot authenticate against openGauss/GaussDB servers configured with
 fork maintained by the same Huawei org as the Python driver), behind the same
 proxy-capable dialer. See the commit message for the full change list.
 
-## Both flavors are supported — vanilla PostgreSQL included
+## GaussDB-only
 
-The upstream gaussdb-go driver could not talk to standard PostgreSQL servers
-at all: it starts every connection with GaussDB's private protocol version
-(3, 51) and could not decode the `NegotiateProtocolVersion` reply, and it had
-repurposed the standard SASL auth code (10) for its SHA256 challenge. Both are
-fixed in the [alex-tw-lam/database-gaussdb-go](https://github.com/alex-tw-lam/database-gaussdb-go)
-fork (tags `v1.0.0-rc1.1`/`rc1.2`, branch `negotiate-protocol-version`), wired
-in through a `replace` directive — worth PR-ing back to Huawei. With those
-fixes the same provider binary authenticates against both flavors:
+This provider targets openGauss/GaussDB exclusively. It connects through
+the upstream [gaussdb-go](https://github.com/HuaweiCloudDeveloper/gaussdb-go)
+driver (pgx v5 fork, maintained by Huawei), which speaks openGauss's native
+sha256 authentication (`password_encryption_type = 2`) as well as md5
+(type 0/1). Vanilla PostgreSQL servers are **not** supported: the upstream
+driver requests GaussDB's protocol version (3, 51) and cannot complete the
+negotiation or SCRAM exchange that standard PostgreSQL requires. (A fork
+with those two protocol fixes exists at
+[alex-tw-lam/database-gaussdb-go](https://github.com/alex-tw-lam/database-gaussdb-go)
+but this provider deliberately does not depend on it.)
 
-| Server | Auth exercised | Result |
-| --- | --- | --- |
-| openGauss 5.0.0 (`password_encryption_type = 2`) | GaussDB sha256 | PASS |
-| PostgreSQL 16.15 (`password_encryption = scram-sha-256`) | SCRAM-SHA-256 | PASS |
-
-Both checks run via the opt-in smoke test:
+Verified against a live openGauss 5.0.0 container with sha256 enabled via
+the opt-in smoke test:
 
 ```
 GAUSSDB_SMOKE_DSN='postgres://gaussdb:…@localhost:25432/postgres?sslmode=disable' \
-  go test ./postgresql/ -run TestGaussDBConnectionSmoke -v
+  go test ./gaussdb/ -run TestGaussDBConnectionSmoke -v
 ```
 
 ## Known behavior differences
@@ -59,11 +57,11 @@ lifecycles (create → converged plan → update → destroy):
   password is generated for roles created without one — openGauss mandates a
   password on every `CREATE ROLE`, even `NOLOGIN` group roles. sha256-stored
   passwords no longer leak their server hash into state.
-- **New `postgresql_tablespace` resource**: `owner`, `location` (portable),
+- **New `gaussdb_tablespace` resource**: `owner`, `location` (portable),
   `relative_location` + `maxsize` (openGauss; update resizes via
   `ALTER TABLESPACE … RESIZE MAXSIZE`). Quota strings compare by byte value
   (`1G` == `1048576 K`).
-- **`postgresql_database` additions**: `db_compatibility` (PG/A/B/C; PG-only
+- **`gaussdb_database` additions**: `db_compatibility` (PG/A/B/C; PG-only
   servers accept just "PG"; openGauss defaults new databases to A!),
   `revoke_public_connect` (updates with GRANT/REVOKE … TO/FROM PUBLIC),
   `enable_private_object` (openGauss only, executed inside the target
@@ -80,9 +78,9 @@ lifecycles (create → converged plan → update → destroy):
 
 ### Unsupported on openGauss/GaussDB (server-side)
 
-- `postgresql_subscription` — WITH parameters differ and creation requires
+- `gaussdb_subscription` — WITH parameters differ and creation requires
   GaussDB keyfile infrastructure (`subscription.key.cipher`).
-- `postgresql_security_label` — server answers "SECURITY LABEL is not yet
+- `gaussdb_security_label` — server answers "SECURITY LABEL is not yet
   supported" (0A000).
 - `DROP EXTENSION` fails for some extensions on openGauss 5.0 builds
   ("EXTENSION is not yet supported") — destroying such an extension resource
@@ -98,20 +96,20 @@ converges, updates and destroys cleanly):
 
 | Broker SQL | Provider resource | Status |
 | --- | --- | --- |
-| `CREATE ROLE … NOLOGIN PASSWORD` (group role) | `postgresql_role` | ✅ (password auto-generated when unset) |
-| `CREATE USER … LOGIN PASSWORD`, `ALTER ROLE …` | `postgresql_role` | ✅ |
-| `GRANT role TO member` / `REVOKE` | `postgresql_grant_role` | ✅ |
-| `GRANT/REVOKE CONNECT, USAGE, CREATE …` | `postgresql_grant` | ✅ |
-| `ALTER DEFAULT PRIVILEGES …` | `postgresql_default_privileges` | ✅ |
-| `CREATE DATABASE OWNER … TEMPLATE … ENCODING … TABLESPACE … CONNECTION LIMIT` | `postgresql_database` | ✅ |
-| `CREATE DATABASE … DBCOMPATIBILITY {PG,A,B,C}` | `postgresql_database` `db_compatibility` | ✅ |
-| `REVOKE CONNECT ON DATABASE … FROM PUBLIC` | `postgresql_database` `revoke_public_connect` | ✅ |
-| `ALTER DATABASE … ENABLE PRIVATE OBJECT` | `postgresql_database` `enable_private_object` | ✅ (write-only flag) |
-| `CREATE TABLESPACE … OWNER … RELATIVE LOCATION … MAXSIZE …` | `postgresql_tablespace` | ✅ |
-| `ALTER TABLESPACE … RESIZE MAXSIZE …` | `postgresql_tablespace` `maxsize` update | ✅ |
-| `ALTER DATABASE … CONNECTION LIMIT` | `postgresql_database` update | ✅ |
-| `DROP DATABASE` + `pg_terminate_backend` | `postgresql_database` delete | ✅ |
-| terminate + `DROP OWNED BY … CASCADE` on unbind | `postgresql_role` delete | ✅ |
+| `CREATE ROLE … NOLOGIN PASSWORD` (group role) | `gaussdb_role` | ✅ (password auto-generated when unset) |
+| `CREATE USER … LOGIN PASSWORD`, `ALTER ROLE …` | `gaussdb_role` | ✅ |
+| `GRANT role TO member` / `REVOKE` | `gaussdb_grant_role` | ✅ |
+| `GRANT/REVOKE CONNECT, USAGE, CREATE …` | `gaussdb_grant` | ✅ |
+| `ALTER DEFAULT PRIVILEGES …` | `gaussdb_default_privileges` | ✅ |
+| `CREATE DATABASE OWNER … TEMPLATE … ENCODING … TABLESPACE … CONNECTION LIMIT` | `gaussdb_database` | ✅ |
+| `CREATE DATABASE … DBCOMPATIBILITY {PG,A,B,C}` | `gaussdb_database` `db_compatibility` | ✅ |
+| `REVOKE CONNECT ON DATABASE … FROM PUBLIC` | `gaussdb_database` `revoke_public_connect` | ✅ |
+| `ALTER DATABASE … ENABLE PRIVATE OBJECT` | `gaussdb_database` `enable_private_object` | ✅ (write-only flag) |
+| `CREATE TABLESPACE … OWNER … RELATIVE LOCATION … MAXSIZE …` | `gaussdb_tablespace` | ✅ |
+| `ALTER TABLESPACE … RESIZE MAXSIZE …` | `gaussdb_tablespace` `maxsize` update | ✅ |
+| `ALTER DATABASE … CONNECTION LIMIT` | `gaussdb_database` update | ✅ |
+| `DROP DATABASE` + `pg_terminate_backend` | `gaussdb_database` delete | ✅ |
+| terminate + `DROP OWNED BY … CASCADE` on unbind | `gaussdb_role` delete | ✅ |
 
 ### Phase 3 — optional follow-ups
 
@@ -121,8 +119,10 @@ converges, updates and destroys cleanly):
 
 ### Upstream note
 
-The provider no longer depends on lib/pq directly, and the gaussdb-go fork
-above speaks to both vanilla PostgreSQL (SCRAM) and openGauss (sha256) —
-connection-level dual-stack is empirical, not aspirational. Upstreaming to
-cyrilgdn would still be a separate effort (the DSN/driver plumbing differs
-from lib/pq), and the two gaussdb-go fixes should go to Huawei first.
+This is a GaussDB-only fork of
+[cyrilgdn/terraform-provider-postgresql](https://github.com/cyrilgdn/terraform-provider-postgresql)
+(lib/pq is no longer a direct dependency; the driver, DSN plumbing and SQL
+dialect all target openGauss/GaussDB). The protocol fixes that would let the
+driver also reach vanilla PostgreSQL live unused in
+[alex-tw-lam/database-gaussdb-go](https://github.com/alex-tw-lam/database-gaussdb-go)
+and would make a good upstream PR to Huawei.

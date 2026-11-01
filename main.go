@@ -1,11 +1,11 @@
 package main
 
 import (
+	"github.com/alex-tw-lam/terraform-provider-gaussdb/gaussdb"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
-	"github.com/terraform-providers/terraform-provider-postgresql/postgresql"
 )
 
 func main() {
 	plugin.Serve(&plugin.ServeOpts{
-		ProviderFunc: postgresql.Provider})
+		ProviderFunc: gaussdb.Provider})
 }

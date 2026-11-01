@@ -1,0 +1,609 @@
+package gaussdb
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+)
+
+func TestAccPostgresqlRole_Basic(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testCheckCompatibleVersion(t, featurePrivileges)
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccPostgresqlRoleConfig,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckPostgresqlRoleExists("myrole2", nil, nil),
+					resource.TestCheckResourceAttr("gaussdb_role.myrole2", "name", "myrole2"),
+					resource.TestCheckResourceAttr("gaussdb_role.myrole2", "login", "true"),
+					resource.TestCheckResourceAttr("gaussdb_role.myrole2", "roles.#", "0"),
+
+					testAccCheckPostgresqlRoleExists("role_default", nil, nil),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "name", "role_default"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "superuser", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "create_database", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "create_role", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "inherit", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "replication", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "bypass_row_level_security", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "connection_limit", "-1"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "encrypted_password", "true"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "password", ""),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "valid_until", "infinity"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "skip_drop_role", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "skip_reassign_owned", "false"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "statement_timeout", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "idle_in_transaction_session_timeout", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_defaults", "assume_role", ""),
+
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_create_database", "name", "role_with_create_database"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_create_database", "create_database", "true"),
+
+					testAccCheckPostgresqlRoleExists("sub_role", []string{"myrole2", "role_simple"}, nil),
+					resource.TestCheckResourceAttr("gaussdb_role.sub_role", "name", "sub_role"),
+					resource.TestCheckResourceAttr("gaussdb_role.sub_role", "roles.#", "2"),
+					resource.TestCheckResourceAttr("gaussdb_role.sub_role", "roles.0", "myrole2"),
+					resource.TestCheckResourceAttr("gaussdb_role.sub_role", "roles.1", "role_simple"),
+
+					testAccCheckPostgresqlRoleExists("role_with_search_path", nil, []string{"bar", "foo-with-hyphen"}),
+				),
+			},
+		},
+	})
+}
+
+// Test creating a superuser role.
+func TestAccPostgresqlRole_Superuser(t *testing.T) {
+
+	roleConfig := `
+resource "gaussdb_role" "role_with_superuser" {
+  name = "role_with_superuser"
+  superuser = true
+  login = true
+  password = "mypass"
+}`
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testCheckCompatibleVersion(t, featurePrivileges)
+			// Need to a be a superuser to create a superuser
+			testSuperuserPreCheck(t)
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: roleConfig,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_superuser", "name", "role_with_superuser"),
+					resource.TestCheckResourceAttr("gaussdb_role.role_with_superuser", "superuser", "true"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccPostgresqlRole_Update(t *testing.T) {
+
+	var configCreate = `
+resource "gaussdb_role" "update_role" {
+  name = "update_role"
+  login = true
+  password = "toto"
+  valid_until = "2099-05-04 12:00:00+00"
+}
+`
+
+	var configUpdate = `
+resource "gaussdb_role" "group_role" {
+  name = "group_role"
+}
+
+resource "gaussdb_role" "update_role" {
+  name = "update_role2"
+  login = true
+  connection_limit = 5
+  password = "titi"
+  roles = ["${postgresql_role.group_role.name}"]
+  search_path = ["mysearchpath"]
+  statement_timeout = 30000
+  idle_in_transaction_session_timeout = 60000
+  assume_role = "${postgresql_role.group_role.name}"
+}
+`
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testCheckCompatibleVersion(t, featurePrivileges)
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: configCreate,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckPostgresqlRoleExists("update_role", []string{}, nil),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "name", "update_role"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "login", "true"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "connection_limit", "-1"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "password", "toto"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "valid_until", "2099-05-04 12:00:00+00"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "roles.#", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "search_path.#", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "statement_timeout", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "idle_in_transaction_session_timeout", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "assume_role", ""),
+					testAccCheckRoleCanLogin(t, "update_role", "toto"),
+				),
+			},
+			{
+				Config: configUpdate,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckPostgresqlRoleExists("update_role2", []string{"group_role"}, nil),
+					resource.TestCheckResourceAttr(
+						"gaussdb_role.update_role", "name", "update_role2",
+					),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "connection_limit", "5"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "login", "true"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "password", "titi"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "valid_until", "infinity"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "roles.#", "1"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "roles.0", "group_role"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "search_path.#", "1"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "search_path.0", "mysearchpath"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "statement_timeout", "30000"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "idle_in_transaction_session_timeout", "60000"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "assume_role", "group_role"),
+					testAccCheckRoleCanLogin(t, "update_role2", "titi"),
+				),
+			},
+			// apply the first one again to test that the granted role is correctly
+			// revoked and the search path has been reset to default.
+			{
+				Config: configCreate,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckPostgresqlRoleExists("update_role", []string{}, nil),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "name", "update_role"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "login", "true"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "connection_limit", "-1"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "password", "toto"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "roles.#", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "search_path.#", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "statement_timeout", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "idle_in_transaction_session_timeout", "0"),
+					resource.TestCheckResourceAttr("gaussdb_role.update_role", "assume_role", ""),
+					testAccCheckRoleCanLogin(t, "update_role", "toto"),
+				),
+			},
+		},
+	})
+}
+
+// Test to create a role with admin user (usually postgres) granted to it
+// There were a bug on RDS like setup (with a non-superuser postgres role)
+// where it couldn't delete the role in this case.
+func TestAccPostgresqlRole_AdminGranted(t *testing.T) {
+	admin := os.Getenv("PGUSER")
+	if admin == "" {
+		admin = "postgres"
+	}
+
+	roleConfig := fmt.Sprintf(`
+resource "gaussdb_role" "test_role" {
+  name  = "test_role"
+  roles = [
+	  "%s"
+  ]
+}`, admin)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			client := testAccProvider.Meta().(*Client)
+			db, err := client.Connect()
+			if err != nil {
+				t.Fatalf("could connect to database: %v", err)
+			}
+			// Requires >= 9 and <16
+			// We disable this test for >= pg16 as it makes no sense with the new createRoleSelfGrant feature
+			if !db.featureSupported(featurePrivileges) || db.featureSupported(featureCreateRoleSelfGrant) {
+				t.Skipf("Skip extension tests for Postgres %s", db.version)
+			}
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: roleConfig,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckPostgresqlRoleExists("test_role", []string{admin}, nil),
+					resource.TestCheckResourceAttr("gaussdb_role.test_role", "name", "test_role"),
+				),
+			},
+		},
+	})
+}
+
+func testAccCheckPostgresqlRoleDestroy(s *terraform.State) error {
+	client := testAccProvider.Meta().(*Client)
+
+	for _, rs := range s.RootModule().Resources {
+		if rs.Type != "gaussdb_role" {
+			continue
+		}
+
+		exists, err := checkRoleExists(client, rs.Primary.ID)
+
+		if err != nil {
+			return fmt.Errorf("error checking role %s", err)
+		}
+
+		if exists {
+			return fmt.Errorf("Role still exists after destroy")
+		}
+	}
+
+	return nil
+}
+
+func testAccCheckPostgresqlRoleExists(roleName string, grantedRoles []string, searchPath []string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		client := testAccProvider.Meta().(*Client)
+
+		exists, err := checkRoleExists(client, roleName)
+		if err != nil {
+			return fmt.Errorf("error checking role %s", err)
+		}
+
+		if !exists {
+			return fmt.Errorf("Role not found")
+		}
+
+		if grantedRoles != nil {
+			if err := checkGrantedRoles(client, roleName, grantedRoles); err != nil {
+				return err
+			}
+		}
+
+		if searchPath != nil {
+			if err := checkSearchPath(client, roleName, searchPath); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+func checkRoleExists(client *Client, roleName string) (bool, error) {
+	db, err := client.Connect()
+	if err != nil {
+		return false, err
+	}
+	var _rez int
+	err = db.QueryRow("SELECT 1 from pg_roles d WHERE rolname=$1", roleName).Scan(&_rez)
+	switch {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("error reading info about role: %s", err)
+	}
+
+	return true, nil
+}
+
+func testAccCheckRoleCanLogin(t *testing.T, role, password string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		config := getTestConfig(t)
+		config.Username = role
+		config.Password = password
+		db, err := sql.Open("postgres", config.connStr("postgres"))
+		if err != nil {
+			return fmt.Errorf("could not open SQL connection: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			return fmt.Errorf("could not connect as role %s: %v", role, err)
+		}
+		return nil
+	}
+}
+
+func checkGrantedRoles(client *Client, roleName string, expectedRoles []string) error {
+	db, err := client.Connect()
+	if err != nil {
+		return err
+	}
+
+	rows, err := db.Query(
+		"SELECT pg_get_userbyid(roleid) as rolname from pg_auth_members WHERE pg_get_userbyid(member) = $1 ORDER BY rolname",
+		roleName,
+	)
+	if err != nil {
+		return fmt.Errorf("error reading granted roles: %v", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("error closing rows: %v", err)
+		}
+	}()
+
+	grantedRoles := []string{}
+	for rows.Next() {
+		var grantedRole string
+		if err := rows.Scan(&grantedRole); err != nil {
+			return fmt.Errorf("error scanning granted role: %v", err)
+		}
+		grantedRoles = append(grantedRoles, grantedRole)
+	}
+
+	sort.Strings(expectedRoles)
+	if !reflect.DeepEqual(grantedRoles, expectedRoles) {
+		return fmt.Errorf(
+			"Role %s is not a member of the expected list of roles. expected %v - got %v",
+			roleName, expectedRoles, grantedRoles,
+		)
+	}
+	return nil
+}
+
+func checkSearchPath(client *Client, roleName string, expectedSearchPath []string) error {
+	db, err := client.Connect()
+	if err != nil {
+		return err
+	}
+
+	var searchPathStr string
+	err = db.QueryRow(
+		"SELECT (pg_options_to_table(rolconfig)).option_value FROM pg_roles WHERE rolname=$1;",
+		roleName,
+	).Scan(&searchPathStr)
+
+	// The query returns ErrNoRows if the search path hasn't been altered.
+	if err != nil && err == sql.ErrNoRows {
+		searchPathStr = "\"$user\", public"
+	} else if err != nil {
+		return fmt.Errorf("error reading search_path: %v", err)
+	}
+
+	searchPath := strings.Split(searchPathStr, ", ")
+	for i := range searchPath {
+		searchPath[i] = strings.Trim(searchPath[i], `"`)
+	}
+	sort.Strings(expectedSearchPath)
+	if !reflect.DeepEqual(searchPath, expectedSearchPath) {
+		return fmt.Errorf(
+			"search_path is not equal to expected value. expected %v - got %v",
+			expectedSearchPath, searchPath,
+		)
+	}
+	return nil
+}
+
+var testAccPostgresqlRoleConfig = `
+resource "gaussdb_role" "myrole2" {
+  name = "myrole2"
+  login = true
+}
+
+resource "gaussdb_role" "role_with_pwd" {
+  name = "role_with_pwd"
+  login = true
+  password = "mypass"
+}
+
+resource "gaussdb_role" "role_with_pwd_encr" {
+  name = "role_with_pwd_encr"
+  login = true
+  password = "mypass"
+  encrypted_password = true
+}
+
+resource "gaussdb_role" "role_simple" {
+  name = "role_simple"
+}
+
+resource "gaussdb_role" "role_with_defaults" {
+  name = "role_default"
+  superuser = false
+  create_database = false
+  create_role = false
+  inherit = false
+  login = false
+  replication = false
+  bypass_row_level_security = false
+  connection_limit = -1
+  encrypted_password = true
+  password = ""
+  skip_drop_role = false
+  valid_until = "infinity"
+  statement_timeout = 0
+  idle_in_transaction_session_timeout = 0
+  assume_role = ""
+}
+
+resource "gaussdb_role" "role_with_create_database" {
+  name = "role_with_create_database"
+  create_database = true
+}
+
+resource "gaussdb_role" "sub_role" {
+	name = "sub_role"
+	roles = [
+		"${postgresql_role.myrole2.id}",
+		"${postgresql_role.role_simple.id}",
+	]
+}
+
+resource "gaussdb_role" "role_with_search_path" {
+  name = "role_with_search_path"
+  search_path = ["bar", "foo-with-hyphen"]
+}
+`
+
+func TestAccPostgresqlRole_WriteOnlyPassword_Basic(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testCheckCompatibleVersion(t, featurePrivileges)
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "gaussdb_role" "wo_pwd_role" {
+  name        = "wo_pwd_role"
+  login       = true
+  password_wo = "secretpass"
+  password_wo_version = "1"
+}
+`,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckPostgresqlRoleExists("wo_pwd_role", nil, nil),
+					resource.TestCheckNoResourceAttr("gaussdb_role.wo_pwd_role", "password_wo"), // must be blank
+					resource.TestCheckNoResourceAttr("gaussdb_role.wo_pwd_role", "password"),    // must be blank
+					testAccCheckRoleCanLogin(t, "wo_pwd_role", "secretpass"),                    // actually usable
+				),
+			},
+		},
+	})
+}
+
+func TestAccPostgresqlRole_WriteOnlyPassword_Switch(t *testing.T) {
+	configPassword := `
+resource "gaussdb_role" "switch_role" {
+  name     = "switch_role"
+  login    = true
+  password = "initialpass"
+}`
+
+	configPasswordWO := `
+resource "gaussdb_role" "switch_role" {
+  name        = "switch_role"
+  login       = true
+  password_wo = "wopass"
+  password_wo_version = "1"
+}`
+
+	configPasswordWOChangedWithoutVersionChange := `
+resource "gaussdb_role" "switch_role" {
+  name        = "switch_role"
+  login       = true
+  password_wo = "wopass123"
+  password_wo_version = "1"
+}`
+
+	configPasswordReturn := `
+resource "gaussdb_role" "switch_role" {
+  name     = "switch_role"
+  login    = true
+  password = "revertpass"
+}`
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: configPassword,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("gaussdb_role.switch_role", "password", "initialpass"),
+					testAccCheckRoleCanLogin(t, "switch_role", "initialpass"),
+				),
+			},
+			{
+				Config: configPasswordWO,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRoleCanLogin(t, "switch_role", "wopass"),
+					resource.TestCheckResourceAttr("gaussdb_role.switch_role", "password", ""), // value cleared from state
+				),
+			},
+			{
+				Config: configPasswordWOChangedWithoutVersionChange,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRoleCanLogin(t, "switch_role", "wopass"), //because the version didn't change, the old password still works
+				),
+			},
+			{
+				Config: configPasswordReturn,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("gaussdb_role.switch_role", "password", "revertpass"),
+					testAccCheckRoleCanLogin(t, "switch_role", "revertpass"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccPostgresqlRole_WriteOnlyPassword_WithVersioning(t *testing.T) {
+	const roleName = "switch_role"
+
+	configWOv1 := `
+resource "gaussdb_role" "switch_role" {
+  name                 = "switch_role"
+  login                = true
+  password_wo          = "wopass1"
+  password_wo_version  = 1
+}`
+
+	configWOv1NewPass := `
+resource "gaussdb_role" "switch_role" {
+  name                 = "switch_role"
+  login                = true
+  password_wo          = "wopass2"
+  password_wo_version  = "1"
+}`
+
+	configWOv2 := `
+resource "gaussdb_role" "switch_role" {
+  name                 = "switch_role"
+  login                = true
+  password_wo          = "wopass2"
+  password_wo_version  = "2"
+}`
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: configWOv1,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("gaussdb_role.switch_role", "password_wo_version", "1"),
+					testAccCheckRoleCanLogin(t, roleName, "wopass1"),
+				),
+			},
+			{
+				// Update the password but keep the version the same → should still login with old password
+				Config: configWOv1NewPass,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRoleCanLogin(t, roleName, "wopass1"),
+					resource.TestCheckResourceAttr("gaussdb_role.switch_role", "password_wo_version", "1"),
+				),
+			},
+			{
+				// Now bump the version → new password should apply
+				Config: configWOv2,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckRoleCanLogin(t, roleName, "wopass2"),
+					resource.TestCheckResourceAttr("gaussdb_role.switch_role", "password_wo_version", "2"),
+				),
+			},
+		},
+	})
+}
