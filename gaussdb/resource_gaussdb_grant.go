@@ -85,11 +85,19 @@ func resourceGaussDBGrant() *schema.Resource {
 				Description: "The specific columns to grant privileges on for this role",
 			},
 			"privileges": {
-				Type:        schema.TypeSet,
-				Required:    true,
-				Elem:        &schema.Schema{Type: schema.TypeString},
-				Set:         schema.HashString,
-				Description: "The list of privileges to grant",
+				Type:     schema.TypeSet,
+				Required: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+				// Case-insensitive hash so "create" and "CREATE" land in the
+				// same set slot; the read-back yields canonical upper-case
+				// privilege names from the ACLs.
+				Set: func(v any) int {
+					return schema.HashString(strings.ToUpper(v.(string)))
+				},
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					return strings.EqualFold(old, new)
+				},
+				Description: "The list of privileges to grant (case-insensitive, normalized to upper case in state)",
 			},
 			"with_grant_option": {
 				Type:        schema.TypeBool,
@@ -165,6 +173,7 @@ func resourceGaussDBGrantCreateOrUpdate(db *DBConnection, d *schema.ResourceData
 	if err := validatePrivileges(db, d); err != nil {
 		return err
 	}
+	normalizePrivilegeCase(d)
 
 	database := d.Get("database").(string)
 
@@ -852,4 +861,16 @@ func validateFeatureSupport(db *DBConnection, d *schema.ResourceData) error {
 		)
 	}
 	return nil
+}
+
+// normalizePrivilegeCase upper-cases the configured privileges so the
+// generated SQL, the stored state and the ACL read-back (canonical upper
+// case) agree regardless of the configuration's case.
+func normalizePrivilegeCase(d *schema.ResourceData) {
+	set := d.Get("privileges").(*schema.Set)
+	upper := make([]any, 0, set.Len())
+	for _, p := range set.List() {
+		upper = append(upper, strings.ToUpper(p.(string)))
+	}
+	_ = d.Set("privileges", upper)
 }

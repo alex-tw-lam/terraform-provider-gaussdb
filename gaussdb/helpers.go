@@ -410,11 +410,22 @@ func validatePrivileges(db *DBConnection, d *schema.ResourceData) error {
 	}
 
 	for _, priv := range privileges {
-		if !sliceContainsStr(allowed, priv.(string)) {
+		if !sliceContainsStrFold(allowed, priv.(string)) {
 			return fmt.Errorf("%s is not an allowed privilege for object type %s", priv, objectType)
 		}
 	}
 	return nil
+}
+
+// sliceContainsStrFold is sliceContainsStr with case-insensitive matching —
+// privilege keywords are case-insensitive in SQL.
+func sliceContainsStrFold(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if strings.EqualFold(s, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func resourcePrivilegesEqual(granted *schema.Set, db *DBConnection, d *schema.ResourceData) bool {
