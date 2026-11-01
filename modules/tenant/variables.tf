@@ -38,3 +38,21 @@ variable "enable_private_object" {
   type        = bool
   default     = true
 }
+
+variable "seed_hosts" {
+  description = "GaussDB node addresses (host or host:port) used to build the client-facing seed-list URIs; entries without a port use db_port. Only affects outputs, not the provider connection"
+  type        = list(string)
+  default     = []
+}
+
+variable "db_port" {
+  description = "Port appended to seed_hosts entries that do not carry their own"
+  type        = number
+  default     = 8000
+}
+
+variable "sslmode" {
+  description = "sslmode embedded in the generated client URIs"
+  type        = string
+  default     = "disable"
+}

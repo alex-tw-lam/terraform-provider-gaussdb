@@ -24,6 +24,9 @@ module "orders" {
 | `group_role` | tenant group (owner) role |
 | `app_role` | application login role |
 | `tablespace` | tenant tablespace name |
+| `app_username` / `app_password` (sensitive) | application credentials |
+| `hosts` | comma-separated seed list (`host:port`) |
+| `app_uri` / `uri_seed` / `jdbc_uri` (sensitive) | client connection URIs built from `seed_hosts`; password percent-encoded; empty when `seed_hosts` is unset |
 
 The group role's password is auto-generated and not stored in state — it is
 irrelevant for a NOLOGIN role and cannot be output.

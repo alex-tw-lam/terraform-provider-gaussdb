@@ -42,12 +42,7 @@ resource "gaussdb_grant" "public_schema" {
   role        = gaussdb_role.tenant_grp.name
 }
 
-resource "gaussdb_grant" "create_schemas" {
-  database    = gaussdb_database.tenant_db.name
-  object_type = "database"
-  privileges  = ["CREATE"]
-  role        = gaussdb_role.tenant_grp.name
-}
+
 
 # The application login: member of the group role, read-write.
 resource "gaussdb_role" "app" {
@@ -55,4 +50,28 @@ resource "gaussdb_role" "app" {
   login    = true
   password = var.app_password
   roles    = [gaussdb_role.tenant_grp.name]
+}
+
+# One grant per (role, object): the provider models a gaussdb_grant as the
+# complete privilege set of that pair, so CONNECT and CREATE for the group
+# role live in one resource. revoke_public_connect removed PUBLIC's
+# CONNECT, so it is granted back here alongside schema-creation rights.
+resource "gaussdb_grant" "connect_and_create_schemas" {
+  database    = gaussdb_database.tenant_db.name
+  object_type = "database"
+  privileges  = ["CONNECT", "CREATE"]
+  role        = gaussdb_role.tenant_grp.name
+}
+
+resource "gaussdb_grant" "connect_app" {
+  database    = gaussdb_database.tenant_db.name
+  object_type = "database"
+  privileges  = ["CONNECT"]
+  role        = gaussdb_role.app.name
+}
+
+locals {
+  seed_endpoints = [for h in var.seed_hosts : can(regex(":[0-9]+$", h)) ? h : "${h}:${var.db_port}"]
+  seed_list      = join(",", local.seed_endpoints)
+  first_endpoint = try(local.seed_endpoints[0], "")
 }

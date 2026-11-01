@@ -126,3 +126,12 @@ dialect all target openGauss/GaussDB). The protocol fixes that would let the
 driver also reach vanilla PostgreSQL live unused in
 [alex-tw-lam/database-gaussdb-go](https://github.com/alex-tw-lam/database-gaussdb-go)
 and would make a good upstream PR to Huawei.
+
+## openGauss: database CONNECT is not inherited via role membership
+
+Unlike PostgreSQL, openGauss 5.0 does not pass database `CONNECT` through
+role membership: a login role that is a member of a group granted
+`CONNECT` still fails `has_database_privilege` and is refused at login
+with `permission denied for database` (42501) once `revoke_public_connect`
+is in effect. Grant `CONNECT` directly to every login role (the tenant
+module does this via its `connect_app` grant).
