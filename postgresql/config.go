@@ -393,7 +393,8 @@ func (c *Client) connectWithRetry(ctx context.Context, postgresDriverName, dsn s
 // configuration error (bad credentials, unknown database) that will not be
 // fixed by retrying.
 func isRetryableConnectionError(err error) bool {
-	if pqErr, ok := errors.AsType[*pq.Error](err); ok {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
 		switch pqErr.Code.Class() {
 		case "28", // Invalid Authorization Specification
 			"3D": // Invalid Catalog Name
