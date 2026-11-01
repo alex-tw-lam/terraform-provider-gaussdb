@@ -127,11 +127,22 @@ driver also reach vanilla PostgreSQL live unused in
 [alex-tw-lam/database-gaussdb-go](https://github.com/alex-tw-lam/database-gaussdb-go)
 and would make a good upstream PR to Huawei.
 
-## openGauss: database CONNECT is not inherited via role membership
+## openGauss: database ACL letters and the one-grant-per-pair rule
 
-Unlike PostgreSQL, openGauss 5.0 does not pass database `CONNECT` through
-role membership: a login role that is a member of a group granted
-`CONNECT` still fails `has_database_privilege` and is refused at login
-with `permission denied for database` (42501) once `revoke_public_connect`
-is in effect. Grant `CONNECT` directly to every login role (the tenant
-module does this via its `connect_app` grant).
+(Corrected after a false first analysis.) Database ACL privilege letters
+follow PostgreSQL's aclitem: `C` = CREATE, `c` = CONNECT, `T` = TEMPORARY —
+so a `datacl` of `grp=C` means CREATE with *no* CONNECT. Role membership
+does inherit ordinary privileges exactly like PostgreSQL (verified: a
+member of a group holding an explicit `c` connects fine), so "openGauss
+does not inherit CONNECT" is wrong. Two real behaviors to design around:
+
+- Each `gaussdb_grant` is the complete privilege set of a (role, object)
+  pair and revokes everything else first — two grant resources on the same
+  pair silently erase each other's privileges (this was the actual cause of
+  the misdiagnosed login failures). Keep one grant per pair; the tenant
+  module merges CONNECT+CREATE into a single resource.
+- Owner-implicit privileges did not cover member logins in the experiment
+  (REVOKE ALL on the owner with no explicit `c` left members refused), so
+  after `revoke_public_connect` the group role needs the explicit CONNECT
+  grant; every member then inherits it. The tenant module also grants
+  CONNECT directly to the application role as defense in depth.
