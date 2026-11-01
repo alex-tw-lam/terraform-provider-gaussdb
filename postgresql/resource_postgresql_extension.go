@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 )
 
 const (
@@ -85,14 +84,14 @@ func resourcePostgreSQLExtensionCreate(db *DBConnection, d *schema.ResourceData)
 	databaseName := getDatabaseForExtension(d, db.client.databaseName)
 
 	b := bytes.NewBufferString("CREATE EXTENSION IF NOT EXISTS ")
-	fmt.Fprint(b, pq.QuoteIdentifier(extName))
+	fmt.Fprint(b, pqQuoteIdentifier(extName))
 
 	if v, ok := d.GetOk(extSchemaAttr); ok {
-		fmt.Fprint(b, " SCHEMA ", pq.QuoteIdentifier(v.(string)))
+		fmt.Fprint(b, " SCHEMA ", pqQuoteIdentifier(v.(string)))
 	}
 
 	if v, ok := d.GetOk(extVersionAttr); ok {
-		fmt.Fprint(b, " VERSION ", pq.QuoteIdentifier(v.(string)))
+		fmt.Fprint(b, " VERSION ", pqQuoteIdentifier(v.(string)))
 	}
 
 	if d.Get(extCreateCascadeAttr).(bool) {
@@ -226,7 +225,7 @@ func resourcePostgreSQLExtensionDelete(db *DBConnection, d *schema.ResourceData)
 		dropMode = "CASCADE"
 	}
 
-	sql := fmt.Sprintf("DROP EXTENSION %s %s ", pq.QuoteIdentifier(extName), dropMode)
+	sql := fmt.Sprintf("DROP EXTENSION %s %s ", pqQuoteIdentifier(extName), dropMode)
 	if _, err := txn.Exec(sql); err != nil {
 		return err
 	}
@@ -285,7 +284,7 @@ func setExtSchema(txn *sql.Tx, d *schema.ResourceData) error {
 	}
 
 	sql := fmt.Sprintf("ALTER EXTENSION %s SET SCHEMA %s",
-		pq.QuoteIdentifier(extName), pq.QuoteIdentifier(n))
+		pqQuoteIdentifier(extName), pqQuoteIdentifier(n))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating extension SCHEMA: %w", err)
 	}
@@ -301,12 +300,12 @@ func setExtVersion(txn *sql.Tx, d *schema.ResourceData) error {
 	extName := d.Get(extNameAttr).(string)
 
 	b := bytes.NewBufferString("ALTER EXTENSION ")
-	fmt.Fprintf(b, "%s UPDATE", pq.QuoteIdentifier(extName))
+	fmt.Fprintf(b, "%s UPDATE", pqQuoteIdentifier(extName))
 
 	_, nraw := d.GetChange(extVersionAttr)
 	n := nraw.(string)
 	if n != "" {
-		fmt.Fprintf(b, " TO %s", pq.QuoteIdentifier(n))
+		fmt.Fprintf(b, " TO %s", pqQuoteIdentifier(n))
 	}
 
 	sql := b.String()

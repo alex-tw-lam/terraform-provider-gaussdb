@@ -8,9 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-
 	// Use Postgres as SQL driver
-	"github.com/lib/pq"
 )
 
 func resourcePostgreSQLDefaultPrivileges() *schema.Resource {
@@ -266,7 +264,7 @@ func readRoleDefaultPrivileges(txn *sql.Tx, db *DBConnection, d *schema.Resource
 	// for the role (grantee), owner (grantor), schema (namespace name)
 	// and the specified object type (defaclobjtype).
 
-	var privileges pq.ByteaArray
+	var privileges pgByteaArray
 	if err := txn.QueryRow(
 		query, queryArgs...,
 	).Scan(&privileges); err != nil {
@@ -311,15 +309,15 @@ func grantRoleDefaultPrivileges(txn *sql.Tx, d *schema.ResourceData) error {
 
 	// If a schema is specified we need to build the part of the query string to action this
 	if pgSchema != "" {
-		inSchema = fmt.Sprintf("IN SCHEMA %s", pq.QuoteIdentifier(pgSchema))
+		inSchema = fmt.Sprintf("IN SCHEMA %s", pqQuoteIdentifier(pgSchema))
 	}
 
 	query := fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR ROLE %s %s GRANT %s ON %sS TO %s",
-		pq.QuoteIdentifier(d.Get("owner").(string)),
+		pqQuoteIdentifier(d.Get("owner").(string)),
 		inSchema,
 		strings.Join(privileges, ","),
 		strings.ToUpper(d.Get("object_type").(string)),
-		pq.QuoteIdentifier(role),
+		pqQuoteIdentifier(role),
 	)
 
 	if d.Get("with_grant_option").(bool) {
@@ -343,14 +341,14 @@ func revokeRoleDefaultPrivileges(txn *sql.Tx, d *schema.ResourceData) error {
 
 	// If a schema is specified we need to build the part of the query string to action this
 	if pgSchema != "" {
-		inSchema = fmt.Sprintf("IN SCHEMA %s", pq.QuoteIdentifier(pgSchema))
+		inSchema = fmt.Sprintf("IN SCHEMA %s", pqQuoteIdentifier(pgSchema))
 	}
 	query := fmt.Sprintf(
 		"ALTER DEFAULT PRIVILEGES FOR ROLE %s %s REVOKE ALL ON %sS FROM %s",
-		pq.QuoteIdentifier(d.Get("owner").(string)),
+		pqQuoteIdentifier(d.Get("owner").(string)),
 		inSchema,
 		strings.ToUpper(d.Get("object_type").(string)),
-		pq.QuoteIdentifier(d.Get("role").(string)),
+		pqQuoteIdentifier(d.Get("role").(string)),
 	)
 
 	if _, err := txn.Exec(query); err != nil {

@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 	acl "github.com/sean-/postgresql-acl"
 )
 
@@ -173,11 +172,11 @@ func createSchema(db *DBConnection, txn *sql.Tx, d *schema.ResourceData) error {
 				fmt.Fprint(b, "IF NOT EXISTS ")
 			}
 		}
-		fmt.Fprint(b, pq.QuoteIdentifier(schemaName))
+		fmt.Fprint(b, pqQuoteIdentifier(schemaName))
 
 		switch v, ok := d.GetOk(schemaOwnerAttr); {
 		case ok:
-			fmt.Fprint(b, " AUTHORIZATION ", pq.QuoteIdentifier(v.(string)))
+			fmt.Fprint(b, " AUTHORIZATION ", pqQuoteIdentifier(v.(string)))
 		}
 		queries = append(queries, b.String())
 
@@ -256,7 +255,7 @@ func resourcePostgreSQLSchemaDelete(db *DBConnection, d *schema.ResourceData) er
 			dropMode = "CASCADE"
 		}
 
-		sql := fmt.Sprintf("DROP SCHEMA %s %s", pq.QuoteIdentifier(schemaName), dropMode)
+		sql := fmt.Sprintf("DROP SCHEMA %s %s", pqQuoteIdentifier(schemaName), dropMode)
 		if _, err = txn.Exec(sql); err != nil {
 			return fmt.Errorf("error deleting schema: %w", err)
 		}
@@ -321,8 +320,8 @@ func resourcePostgreSQLSchemaReadImpl(db *DBConnection, d *schema.ResourceData) 
 	defer deferredRollback(txn)
 
 	var schemaOwner string
-	var schemaACLs []string
-	err = txn.QueryRow("SELECT pg_catalog.pg_get_userbyid(n.nspowner), COALESCE(n.nspacl, '{}'::aclitem[])::TEXT[] FROM pg_catalog.pg_namespace n WHERE n.nspname=$1", schemaName).Scan(&schemaOwner, pq.Array(&schemaACLs))
+	var schemaACLs pgStringArray
+	err = txn.QueryRow("SELECT pg_catalog.pg_get_userbyid(n.nspowner), COALESCE(n.nspacl, '{}'::aclitem[])::TEXT[] FROM pg_catalog.pg_namespace n WHERE n.nspname=$1", schemaName).Scan(&schemaOwner, &schemaACLs)
 	switch {
 	case err == sql.ErrNoRows:
 		log.Printf("[WARN] PostgreSQL schema (%s) not found in database %s", schemaName, database)
@@ -403,7 +402,7 @@ func setSchemaName(txn *sql.Tx, d *schema.ResourceData, databaseName string) err
 		return errors.New("error setting schema name to an empty string")
 	}
 
-	sql := fmt.Sprintf("ALTER SCHEMA %s RENAME TO %s", pq.QuoteIdentifier(o), pq.QuoteIdentifier(n))
+	sql := fmt.Sprintf("ALTER SCHEMA %s RENAME TO %s", pqQuoteIdentifier(o), pqQuoteIdentifier(n))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating schema NAME: %w", err)
 	}
@@ -424,7 +423,7 @@ func setSchemaOwner(txn *sql.Tx, d *schema.ResourceData) error {
 		return errors.New("error setting schema owner to an empty string")
 	}
 
-	sql := fmt.Sprintf("ALTER SCHEMA %s OWNER TO %s", pq.QuoteIdentifier(schemaName), pq.QuoteIdentifier(schemaOwner))
+	sql := fmt.Sprintf("ALTER SCHEMA %s OWNER TO %s", pqQuoteIdentifier(schemaName), pqQuoteIdentifier(schemaOwner))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating schema OWNER: %w", err)
 	}

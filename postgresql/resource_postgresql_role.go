@@ -13,7 +13,6 @@ import (
 	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/lib/pq"
 )
 
 const (
@@ -310,7 +309,7 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 
 		default:
 			createOpts = append(createOpts,
-				fmt.Sprintf("%s %s", opt.sqlKey, pq.QuoteIdentifier(val)))
+				fmt.Sprintf("%s %s", opt.sqlKey, pqQuoteIdentifier(val)))
 		}
 	}
 
@@ -344,7 +343,7 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 		}
 	}
 
-	sql := fmt.Sprintf("CREATE ROLE %s%s", pq.QuoteIdentifier(roleName), createStr)
+	sql := fmt.Sprintf("CREATE ROLE %s%s", pqQuoteIdentifier(roleName), createStr)
 
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error creating role %s: %w", roleName, err)
@@ -395,11 +394,11 @@ func resourcePostgreSQLRoleDelete(db *DBConnection, d *schema.ResourceData) erro
 	if !d.Get(roleSkipReassignOwnedAttr).(bool) {
 		if err := withRolesGranted(txn, []string{roleName}, func() error {
 			currentUser := db.client.config.getDatabaseUsername()
-			if _, err := txn.Exec(fmt.Sprintf("REASSIGN OWNED BY %s TO %s", pq.QuoteIdentifier(roleName), pq.QuoteIdentifier(currentUser))); err != nil {
+			if _, err := txn.Exec(fmt.Sprintf("REASSIGN OWNED BY %s TO %s", pqQuoteIdentifier(roleName), pqQuoteIdentifier(currentUser))); err != nil {
 				return fmt.Errorf("could not reassign owned by role %s to %s: %w", roleName, currentUser, err)
 			}
 
-			if _, err := txn.Exec(fmt.Sprintf("DROP OWNED BY %s", pq.QuoteIdentifier(roleName))); err != nil {
+			if _, err := txn.Exec(fmt.Sprintf("DROP OWNED BY %s", pqQuoteIdentifier(roleName))); err != nil {
 				return fmt.Errorf("could not drop owned by role %s: %w", roleName, err)
 			}
 			return nil
@@ -408,7 +407,7 @@ func resourcePostgreSQLRoleDelete(db *DBConnection, d *schema.ResourceData) erro
 		}
 	}
 	if !d.Get(roleSkipDropRoleAttr).(bool) {
-		if _, err := txn.Exec(fmt.Sprintf("DROP ROLE %s", pq.QuoteIdentifier(roleName))); err != nil {
+		if _, err := txn.Exec(fmt.Sprintf("DROP ROLE %s", pqQuoteIdentifier(roleName))); err != nil {
 			return fmt.Errorf("could not delete role %s: %w", roleName, err)
 		}
 	}
@@ -443,7 +442,7 @@ func resourcePostgreSQLRoleReadImpl(db *DBConnection, d *schema.ResourceData) er
 	var roleSuperuser, roleInherit, roleCreateRole, roleCreateDB, roleCanLogin, roleReplication, roleBypassRLS bool
 	var roleConnLimit int
 	var roleName, roleValidUntil string
-	var roleRoles, roleConfig pq.ByteaArray
+	var roleRoles, roleConfig pgByteaArray
 
 	roleID := d.Id()
 
@@ -545,7 +544,7 @@ func resourcePostgreSQLRoleReadImpl(db *DBConnection, d *schema.ResourceData) er
 
 // readSearchPath searches for a search_path entry in the rolconfig array.
 // In case no such value is present, it returns nil.
-func readSearchPath(roleConfig pq.ByteaArray) []string {
+func readSearchPath(roleConfig pgByteaArray) []string {
 	for _, v := range roleConfig {
 		config := string(v)
 		if strings.HasPrefix(config, roleSearchPathAttr) {
@@ -561,7 +560,7 @@ func readSearchPath(roleConfig pq.ByteaArray) []string {
 
 // readIdleInTransactionSessionTimeout searches for an idle_in_transaction_session_timeout entry in the rolconfig array.
 // In case no such value is present, it returns nil.
-func readIdleInTransactionSessionTimeout(roleConfig pq.ByteaArray) (int, error) {
+func readIdleInTransactionSessionTimeout(roleConfig pgByteaArray) (int, error) {
 	for _, v := range roleConfig {
 		config := string(v)
 		if strings.HasPrefix(config, roleIdleInTransactionSessionTimeoutAttr) {
@@ -578,7 +577,7 @@ func readIdleInTransactionSessionTimeout(roleConfig pq.ByteaArray) (int, error) 
 
 // readStatementTimeout searches for a statement_timeout entry in the rolconfig array.
 // In case no such value is present, it returns nil.
-func readStatementTimeout(roleConfig pq.ByteaArray) (int, error) {
+func readStatementTimeout(roleConfig pgByteaArray) (int, error) {
 	for _, v := range roleConfig {
 		config := string(v)
 		if strings.HasPrefix(config, roleStatementTimeoutAttr) {
@@ -595,7 +594,7 @@ func readStatementTimeout(roleConfig pq.ByteaArray) (int, error) {
 
 // readAssumeRole searches for a role entry in the rolconfig array.
 // In case no such value is present, it returns empty string.
-func readAssumeRole(roleConfig pq.ByteaArray) string {
+func readAssumeRole(roleConfig pgByteaArray) string {
 	var res string
 	var assumeRoleAttr = "role"
 	for _, v := range roleConfig {
@@ -768,7 +767,7 @@ func setRoleName(txn *sql.Tx, d *schema.ResourceData) error {
 		return errors.New("error setting role name to an empty string")
 	}
 
-	sql := fmt.Sprintf("ALTER ROLE %s RENAME TO %s", pq.QuoteIdentifier(o), pq.QuoteIdentifier(n))
+	sql := fmt.Sprintf("ALTER ROLE %s RENAME TO %s", pqQuoteIdentifier(o), pqQuoteIdentifier(n))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role NAME: %w", err)
 	}
@@ -805,7 +804,7 @@ func setRolePassword(txn *sql.Tx, d *schema.ResourceData) error {
 		return nil
 	}
 
-	sql := fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", pq.QuoteIdentifier(roleName), pqQuoteLiteral(password))
+	sql := fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", pqQuoteIdentifier(roleName), pqQuoteLiteral(password))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role password: %w", err)
 	}
@@ -828,7 +827,7 @@ func setRoleBypassRLS(db *DBConnection, txn *sql.Tx, d *schema.ResourceData) err
 		tok = "BYPASSRLS"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role BYPASSRLS: %w", err)
 	}
@@ -843,7 +842,7 @@ func setRoleConnLimit(txn *sql.Tx, d *schema.ResourceData) error {
 
 	connLimit := d.Get(roleConnLimitAttr).(int)
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s CONNECTION LIMIT %d", pq.QuoteIdentifier(roleName), connLimit)
+	sql := fmt.Sprintf("ALTER ROLE %s CONNECTION LIMIT %d", pqQuoteIdentifier(roleName), connLimit)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role CONNECTION LIMIT: %w", err)
 	}
@@ -862,7 +861,7 @@ func setRoleCreateDB(txn *sql.Tx, d *schema.ResourceData) error {
 		tok = "CREATEDB"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role CREATEDB: %w", err)
 	}
@@ -881,7 +880,7 @@ func setRoleCreateRole(txn *sql.Tx, d *schema.ResourceData) error {
 		tok = "CREATEROLE"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role CREATEROLE: %w", err)
 	}
@@ -900,7 +899,7 @@ func setRoleInherit(txn *sql.Tx, d *schema.ResourceData) error {
 		tok = "INHERIT"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role INHERIT: %w", err)
 	}
@@ -919,7 +918,7 @@ func setRoleLogin(txn *sql.Tx, d *schema.ResourceData) error {
 		tok = "LOGIN"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role LOGIN: %w", err)
 	}
@@ -938,7 +937,7 @@ func setRoleReplication(txn *sql.Tx, d *schema.ResourceData) error {
 		tok = "REPLICATION"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role REPLICATION: %w", err)
 	}
@@ -957,7 +956,7 @@ func setRoleSuperuser(txn *sql.Tx, d *schema.ResourceData) error {
 		tok = "SUPERUSER"
 	}
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pq.QuoteIdentifier(roleName), tok)
+	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role SUPERUSER: %w", err)
 	}
@@ -978,7 +977,7 @@ func setRoleValidUntil(txn *sql.Tx, d *schema.ResourceData) error {
 	}
 
 	roleName := d.Get(roleNameAttr).(string)
-	sql := fmt.Sprintf("ALTER ROLE %s VALID UNTIL '%s'", pq.QuoteIdentifier(roleName), pqQuoteLiteral(validUntil))
+	sql := fmt.Sprintf("ALTER ROLE %s VALID UNTIL '%s'", pqQuoteIdentifier(roleName), pqQuoteLiteral(validUntil))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating role VALID UNTIL: %w", err)
 	}
@@ -1013,12 +1012,11 @@ func revokeRoles(txn *sql.Tx, d *schema.ResourceData) error {
 		}
 		// We cannot revoke directly here as it shares the same cursor (with Tx)
 		// and rows.Next seems to retrieve result row by row.
-		// see: https://github.com/lib/pq/issues/81
 		grantedRoles = append(grantedRoles, grantedRole)
 	}
 
 	for _, grantedRole := range grantedRoles {
-		query = fmt.Sprintf("REVOKE %s FROM %s", pq.QuoteIdentifier(grantedRole), pq.QuoteIdentifier(role))
+		query = fmt.Sprintf("REVOKE %s FROM %s", pqQuoteIdentifier(grantedRole), pqQuoteIdentifier(role))
 
 		if _, err := txn.Exec(query); err != nil {
 			return fmt.Errorf("could not revoke role %s from %s: %w", string(grantedRole), role, err)
@@ -1033,7 +1031,7 @@ func grantRoles(txn *sql.Tx, d *schema.ResourceData) error {
 
 	for _, grantingRole := range d.Get("roles").(*schema.Set).List() {
 		query := fmt.Sprintf(
-			"GRANT %s TO %s", pq.QuoteIdentifier(grantingRole.(string)), pq.QuoteIdentifier(role),
+			"GRANT %s TO %s", pqQuoteIdentifier(grantingRole.(string)), pqQuoteIdentifier(role),
 		)
 		if _, err := txn.Exec(query); err != nil {
 			return fmt.Errorf("could not grant role %s to %s: %w", grantingRole, role, err)
@@ -1053,7 +1051,7 @@ func alterSearchPath(txn *sql.Tx, d *schema.ResourceData) error {
 			if strings.Contains(searchPathPart.(string), ", ") {
 				return fmt.Errorf("search_path cannot contain `, `: %v", searchPathPart)
 			}
-			searchPathString[i] = pq.QuoteIdentifier(searchPathPart.(string))
+			searchPathString[i] = pqQuoteIdentifier(searchPathPart.(string))
 		}
 	} else {
 		searchPathString = []string{"DEFAULT"}
@@ -1061,7 +1059,7 @@ func alterSearchPath(txn *sql.Tx, d *schema.ResourceData) error {
 	searchPath := strings.Join(searchPathString[:], ", ")
 
 	query := fmt.Sprintf(
-		"ALTER ROLE %s SET search_path TO %s", pq.QuoteIdentifier(role), searchPath,
+		"ALTER ROLE %s SET search_path TO %s", pqQuoteIdentifier(role), searchPath,
 	)
 	if _, err := txn.Exec(query); err != nil {
 		return fmt.Errorf("could not set search_path %s for %s: %w", searchPath, role, err)
@@ -1078,14 +1076,14 @@ func setStatementTimeout(txn *sql.Tx, d *schema.ResourceData) error {
 	statementTimeout := d.Get(roleStatementTimeoutAttr).(int)
 	if statementTimeout != 0 {
 		sql := fmt.Sprintf(
-			"ALTER ROLE %s SET statement_timeout TO %d", pq.QuoteIdentifier(roleName), statementTimeout,
+			"ALTER ROLE %s SET statement_timeout TO %d", pqQuoteIdentifier(roleName), statementTimeout,
 		)
 		if _, err := txn.Exec(sql); err != nil {
 			return fmt.Errorf("could not set statement_timeout %d for %s: %w", statementTimeout, roleName, err)
 		}
 	} else {
 		sql := fmt.Sprintf(
-			"ALTER ROLE %s RESET statement_timeout", pq.QuoteIdentifier(roleName),
+			"ALTER ROLE %s RESET statement_timeout", pqQuoteIdentifier(roleName),
 		)
 		if _, err := txn.Exec(sql); err != nil {
 			return fmt.Errorf("could not reset statement_timeout for %s: %w", roleName, err)
@@ -1103,14 +1101,14 @@ func setIdleInTransactionSessionTimeout(txn *sql.Tx, d *schema.ResourceData) err
 	idleInTransactionSessionTimeout := d.Get(roleIdleInTransactionSessionTimeoutAttr).(int)
 	if idleInTransactionSessionTimeout != 0 {
 		sql := fmt.Sprintf(
-			"ALTER ROLE %s SET idle_in_transaction_session_timeout TO %d", pq.QuoteIdentifier(roleName), idleInTransactionSessionTimeout,
+			"ALTER ROLE %s SET idle_in_transaction_session_timeout TO %d", pqQuoteIdentifier(roleName), idleInTransactionSessionTimeout,
 		)
 		if _, err := txn.Exec(sql); err != nil {
 			return fmt.Errorf("could not set idle_in_transaction_session_timeout %d for %s: %w", idleInTransactionSessionTimeout, roleName, err)
 		}
 	} else {
 		sql := fmt.Sprintf(
-			"ALTER ROLE %s RESET idle_in_transaction_session_timeout", pq.QuoteIdentifier(roleName),
+			"ALTER ROLE %s RESET idle_in_transaction_session_timeout", pqQuoteIdentifier(roleName),
 		)
 		if _, err := txn.Exec(sql); err != nil {
 			return fmt.Errorf("could not reset idle_in_transaction_session_timeout for %s: %w", roleName, err)
@@ -1128,14 +1126,14 @@ func setAssumeRole(txn *sql.Tx, d *schema.ResourceData) error {
 	assumeRole := d.Get(roleAssumeRoleAttr).(string)
 	if assumeRole != "" {
 		sql := fmt.Sprintf(
-			"ALTER ROLE %s SET ROLE TO %s", pq.QuoteIdentifier(roleName), pq.QuoteIdentifier(assumeRole),
+			"ALTER ROLE %s SET ROLE TO %s", pqQuoteIdentifier(roleName), pqQuoteIdentifier(assumeRole),
 		)
 		if _, err := txn.Exec(sql); err != nil {
 			return fmt.Errorf("could not set role %s for %s: %w", assumeRole, roleName, err)
 		}
 	} else {
 		sql := fmt.Sprintf(
-			"ALTER ROLE %s RESET ROLE", pq.QuoteIdentifier(roleName),
+			"ALTER ROLE %s RESET ROLE", pqQuoteIdentifier(roleName),
 		)
 		if _, err := txn.Exec(sql); err != nil {
 			return fmt.Errorf("could not reset role for %s: %w", roleName, err)

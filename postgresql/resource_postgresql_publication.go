@@ -8,7 +8,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/lib/pq"
 )
 
 const (
@@ -141,7 +140,7 @@ func setPubName(txn *sql.Tx, d *schema.ResourceData) error {
 	o := oraw.(string)
 	n := nraw.(string)
 	database := d.Get(pubDatabaseAttr).(string)
-	sql := fmt.Sprintf("ALTER PUBLICATION %s RENAME TO %s", pq.QuoteIdentifier(o), pq.QuoteIdentifier(n))
+	sql := fmt.Sprintf("ALTER PUBLICATION %s RENAME TO %s", pqQuoteIdentifier(o), pqQuoteIdentifier(n))
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("error updating publication name: %w", err)
 	}
@@ -427,7 +426,7 @@ func resourcePostgreSQLPublicationDelete(db *DBConnection, d *schema.ResourceDat
 		dropMode = "CASCADE"
 	}
 
-	sql := fmt.Sprintf("DROP PUBLICATION %s %s", pq.QuoteIdentifier(publicationName), dropMode)
+	sql := fmt.Sprintf("DROP PUBLICATION %s %s", pqQuoteIdentifier(publicationName), dropMode)
 	if _, err := txn.Exec(sql); err != nil {
 		return fmt.Errorf("could not execute sql: %w", err)
 	}

@@ -2,13 +2,13 @@ package postgresql
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"log"
 	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 )
 
 func PGResourceFunc(fn func(*DBConnection, *schema.ResourceData) error) func(*schema.ResourceData, any) error {
@@ -52,6 +52,124 @@ func pqQuoteLiteral(in string) string {
 	in = strings.ReplaceAll(in, `\`, `\\`)
 	in = strings.ReplaceAll(in, `'`, `''`)
 	return in
+}
+
+// pqQuoteIdentifier quotes an SQL identifier, behaving exactly like the
+// lib/pq QuoteIdentifier this provider used before the gaussdb driver swap.
+func pqQuoteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
+
+// quoteLiteral returns a complete SQL string literal (surrounding single
+// quotes included), behaving exactly like lib/pq's QuoteLiteral.
+func quoteLiteral(literal string) string {
+	return "'" + strings.ReplaceAll(literal, "'", "''") + "'"
+}
+
+// parseArrayElements parses a PostgreSQL one-dimensional array in text
+// format, e.g. {a,"b,c",NULL}. It carries over lib/pq's array parsing
+// (same algorithm, BSD-3-Clause); array columns reach these scanners as
+// their text representation regardless of the driver in use.
+func parseArrayElements(src string) ([][]byte, error) {
+	if len(src) < 2 || src[0] != '{' || src[len(src)-1] != '}' {
+		return nil, fmt.Errorf("invalid array syntax: %s", src)
+	}
+	inner := src[1 : len(src)-1]
+	var elems [][]byte
+	var cur []byte
+	inQuote, wasQuoted, escaped := false, false, false
+	flush := func() {
+		if !wasQuoted && string(cur) == "NULL" {
+			elems = append(elems, nil)
+		} else {
+			elems = append(elems, cur)
+		}
+		cur = nil
+		wasQuoted = false
+	}
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if escaped {
+			cur = append(cur, c)
+			escaped = false
+			continue
+		}
+		switch {
+		case inQuote && c == '\\':
+			escaped = true
+		case c == '"':
+			inQuote = !inQuote
+			wasQuoted = true
+		case !inQuote && c == ',':
+			flush()
+		default:
+			cur = append(cur, c)
+		}
+	}
+	if inQuote {
+		return nil, fmt.Errorf("unterminated quoted element in array: %s", src)
+	}
+	// An empty inner string means an empty array; anything else (including a
+	// single quoted empty element "") still flushes the last element.
+	if len(inner) > 0 || len(elems) > 0 || wasQuoted {
+		flush()
+	}
+	return elems, nil
+}
+
+// pgByteaArray scans a PostgreSQL text array into raw element bytes,
+// replacing lib/pq's ByteaArray. NULL elements scan to nil.
+type pgByteaArray [][]byte
+
+func (a *pgByteaArray) Scan(src any) error {
+	switch s := src.(type) {
+	case nil:
+		*a = nil
+		return nil
+	case []byte:
+		elems, err := parseArrayElements(string(s))
+		*a = elems
+		return err
+	case string:
+		elems, err := parseArrayElements(s)
+		*a = elems
+		return err
+	default:
+		return fmt.Errorf("pgByteaArray: cannot scan from %T", src)
+	}
+}
+
+func (a pgByteaArray) Value() (driver.Value, error) {
+	if a == nil {
+		return nil, nil
+	}
+	parts := make([]string, len(a))
+	for i, e := range a {
+		if e == nil {
+			parts[i] = "NULL"
+			continue
+		}
+		parts[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(string(e)) + `"`
+	}
+	return "{" + strings.Join(parts, ",") + "}", nil
+}
+
+// pgStringArray scans a PostgreSQL text array into strings, replacing the
+// lib/pq Array(&[]string) scanning helper.
+type pgStringArray []string
+
+func (a *pgStringArray) Scan(src any) error {
+	var elems pgByteaArray
+	if err := elems.Scan(src); err != nil {
+		return err
+	}
+	*a = make(pgStringArray, len(elems))
+	for i, e := range elems {
+		if e != nil {
+			(*a)[i] = string(e)
+		}
+	}
+	return nil
 }
 
 func isMemberOfRole(db QueryAble, role, member string) (bool, error) {
@@ -105,7 +223,7 @@ func grantRoleMembership(db QueryAble, role, member string) (bool, error) {
 
 	log.Printf("grantRoleMembership: granting %s to %s", role, member)
 
-	sql := fmt.Sprintf("GRANT %s TO %s", pq.QuoteIdentifier(role), pq.QuoteIdentifier(member))
+	sql := fmt.Sprintf("GRANT %s TO %s", pqQuoteIdentifier(role), pqQuoteIdentifier(member))
 	if _, err := db.Exec(sql); err != nil {
 		return false, fmt.Errorf("error granting role %s to %s: %w", role, member, err)
 	}
@@ -129,7 +247,7 @@ func revokeRoleMembership(db QueryAble, role, member string) (bool, error) {
 
 	log.Printf("revokeRoleMembership: Revoke %s from %s", role, member)
 
-	sql := fmt.Sprintf("REVOKE %s FROM %s", pq.QuoteIdentifier(role), pq.QuoteIdentifier(member))
+	sql := fmt.Sprintf("REVOKE %s FROM %s", pqQuoteIdentifier(role), pqQuoteIdentifier(member))
 	if _, err := db.Exec(sql); err != nil {
 		return false, fmt.Errorf("error revoking role %s from %s: %w", role, member, err)
 	}
@@ -321,7 +439,7 @@ func resourcePrivilegesEqual(granted *schema.Set, db *DBConnection, d *schema.Re
 	return granted.Equal(wantedSet)
 }
 
-func pgArrayToSet(arr pq.ByteaArray) *schema.Set {
+func pgArrayToSet(arr pgByteaArray) *schema.Set {
 	s := make([]any, len(arr))
 	for i, v := range arr {
 		s[i] = string(v)
@@ -354,7 +472,7 @@ func quoteIdentifyIdent(ident string) string {
 		functionArgTypes = "(" + s[1]
 	}
 
-	return fmt.Sprintf("%s%s", pq.QuoteIdentifier(s[0]), functionArgTypes)
+	return fmt.Sprintf("%s%s", pqQuoteIdentifier(s[0]), functionArgTypes)
 }
 
 func setToPgIdentList(schema string, idents *schema.Set) string {
@@ -362,7 +480,7 @@ func setToPgIdentList(schema string, idents *schema.Set) string {
 	for i, ident := range idents.List() {
 		quotedIdents[i] = fmt.Sprintf(
 			"%s.%s",
-			pq.QuoteIdentifier(schema), quoteIdentifyIdent(ident.(string)),
+			pqQuoteIdentifier(schema), quoteIdentifyIdent(ident.(string)),
 		)
 	}
 	return strings.Join(quotedIdents, ",")
@@ -371,7 +489,7 @@ func setToPgIdentList(schema string, idents *schema.Set) string {
 func setToPgIdentListWithoutSchema(idents *schema.Set) string {
 	quotedIdents := make([]string, idents.Len())
 	for i, ident := range idents.List() {
-		quotedIdents[i] = pq.QuoteIdentifier(ident.(string))
+		quotedIdents[i] = pqQuoteIdentifier(ident.(string))
 	}
 	return strings.Join(quotedIdents, ",")
 }
@@ -683,7 +801,7 @@ func defaultDiffSuppressFunc(k, old, new string, d *schema.ResourceData) bool {
 func quoteTableName(tableName string) string {
 	parts := strings.Split(tableName, ".")
 	for i := range parts {
-		parts[i] = pq.QuoteIdentifier(parts[i])
+		parts[i] = pqQuoteIdentifier(parts[i])
 	}
 	return strings.Join(parts, ".")
 }

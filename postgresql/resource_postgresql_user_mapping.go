@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 )
 
 const (
@@ -64,15 +63,15 @@ func resourcePostgreSQLUserMappingCreate(db *DBConnection, d *schema.ResourceDat
 	serverName := d.Get(userMappingServerNameAttr).(string)
 
 	b := bytes.NewBufferString("CREATE USER MAPPING ")
-	fmt.Fprint(b, " FOR ", pq.QuoteIdentifier(username))
-	fmt.Fprint(b, " SERVER ", pq.QuoteIdentifier(serverName))
+	fmt.Fprint(b, " FOR ", pqQuoteIdentifier(username))
+	fmt.Fprint(b, " SERVER ", pqQuoteIdentifier(serverName))
 
 	if options, ok := d.GetOk(userMappingOptionsAttr); ok {
 		fmt.Fprint(b, " OPTIONS ( ")
 		cnt := 0
 		len := len(options.(map[string]any))
 		for k, v := range options.(map[string]any) {
-			fmt.Fprint(b, " ", pq.QuoteIdentifier(k), " ", pq.QuoteLiteral(v.(string)))
+			fmt.Fprint(b, " ", pqQuoteIdentifier(k), " ", quoteLiteral(v.(string)))
 			if cnt < len-1 {
 				fmt.Fprint(b, ", ")
 			}
@@ -111,14 +110,14 @@ func resourcePostgreSQLUserMappingReadImpl(db *DBConnection, d *schema.ResourceD
 	}
 	defer deferredRollback(txn)
 
-	var userMappingOptions []string
+	var userMappingOptions pgStringArray
 	query := "SELECT umoptions FROM information_schema._pg_user_mappings WHERE authorization_identifier = $1 and foreign_server_name = $2"
-	err = txn.QueryRow(query, username, serverName).Scan(pq.Array(&userMappingOptions))
+	err = txn.QueryRow(query, username, serverName).Scan(&userMappingOptions)
 
 	if err != sql.ErrNoRows && err != nil {
 		// Fallback to pg_user_mappings table if information_schema._pg_user_mappings is not available
 		query := "SELECT umoptions FROM pg_user_mappings WHERE usename = $1 and srvname = $2"
-		err = txn.QueryRow(query, username, serverName).Scan(pq.Array(&userMappingOptions))
+		err = txn.QueryRow(query, username, serverName).Scan(&userMappingOptions)
 	}
 
 	switch {
@@ -161,7 +160,7 @@ func resourcePostgreSQLUserMappingDelete(db *DBConnection, d *schema.ResourceDat
 	}
 	defer deferredRollback(txn)
 
-	sql := fmt.Sprintf("DROP USER MAPPING FOR %s SERVER %s ", pq.QuoteIdentifier(username), pq.QuoteIdentifier(serverName))
+	sql := fmt.Sprintf("DROP USER MAPPING FOR %s SERVER %s ", pqQuoteIdentifier(username), pqQuoteIdentifier(serverName))
 	if _, err := txn.Exec(sql); err != nil {
 		return err
 	}
@@ -199,7 +198,7 @@ func setUserMappingOptionsIfChanged(db *DBConnection, d *schema.ResourceData) er
 	serverName := d.Get(userMappingServerNameAttr).(string)
 
 	b := bytes.NewBufferString("ALTER USER MAPPING ")
-	fmt.Fprintf(b, " FOR %s SERVER %s ", pq.QuoteIdentifier(username), pq.QuoteIdentifier(serverName))
+	fmt.Fprintf(b, " FOR %s SERVER %s ", pqQuoteIdentifier(username), pqQuoteIdentifier(serverName))
 
 	oldOptions, newOptions := d.GetChange(userMappingOptionsAttr)
 	fmt.Fprint(b, " OPTIONS ( ")
@@ -212,7 +211,7 @@ func setUserMappingOptionsIfChanged(db *DBConnection, d *schema.ResourceData) er
 			operation = "SET"
 			delete(toRemove, k)
 		}
-		fmt.Fprintf(b, " %s %s %s ", operation, pq.QuoteIdentifier(k), pq.QuoteLiteral(v.(string)))
+		fmt.Fprintf(b, " %s %s %s ", operation, pqQuoteIdentifier(k), quoteLiteral(v.(string)))
 		if cnt < len-1 {
 			fmt.Fprint(b, ", ")
 		}
@@ -223,7 +222,7 @@ func setUserMappingOptionsIfChanged(db *DBConnection, d *schema.ResourceData) er
 		if cnt != 0 { // starting with 0 means to drop all the options. Cannot start with comma
 			fmt.Fprint(b, " , ")
 		}
-		fmt.Fprintf(b, " DROP %s ", pq.QuoteIdentifier(k))
+		fmt.Fprintf(b, " DROP %s ", pqQuoteIdentifier(k))
 		cnt++
 	}
 

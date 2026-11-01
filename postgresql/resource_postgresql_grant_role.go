@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 )
 
 const (
@@ -161,8 +160,8 @@ func createGrantRoleQuery(d *schema.ResourceData) string {
 
 	query := fmt.Sprintf(
 		"GRANT %s TO %s",
-		pq.QuoteIdentifier(grantRole),
-		pq.QuoteIdentifier(role),
+		pqQuoteIdentifier(grantRole),
+		pqQuoteIdentifier(role),
 	)
 	if wao, _ := d.Get("with_admin_option").(bool); wao {
 		query = query + " WITH ADMIN OPTION"
@@ -177,8 +176,8 @@ func createRevokeRoleQuery(d *schema.ResourceData) string {
 
 	return fmt.Sprintf(
 		"REVOKE %s FROM %s",
-		pq.QuoteIdentifier(grantRole),
-		pq.QuoteIdentifier(role),
+		pqQuoteIdentifier(grantRole),
+		pqQuoteIdentifier(role),
 	)
 }
 

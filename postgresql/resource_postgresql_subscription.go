@@ -8,7 +8,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/lib/pq"
 )
 
 func resourcePostgreSQLSubscription() *schema.Resource {
@@ -90,8 +89,8 @@ func resourcePostgreSQLSubscriptionCreate(db *DBConnection, d *schema.ResourceDa
 	}
 
 	sql := fmt.Sprintf("CREATE SUBSCRIPTION %s CONNECTION %s PUBLICATION %s %s;",
-		pq.QuoteIdentifier(subName),
-		pq.QuoteLiteral(connInfo),
+		pqQuoteIdentifier(subName),
+		quoteLiteral(connInfo),
 		publications,
 		optionalParams,
 	)
@@ -120,7 +119,7 @@ func resourcePostgreSQLSubscriptionReadImpl(db *DBConnection, d *schema.Resource
 	}
 	defer deferredRollback(txn)
 
-	var publications []string
+	var publications pgStringArray
 	var connInfo string
 	var slotName string
 
@@ -139,7 +138,7 @@ func resourcePostgreSQLSubscriptionReadImpl(db *DBConnection, d *schema.Resource
 
 	// pg_subscription requires superuser permissions, it is okay to fail here
 	query := "SELECT subconninfo, subpublications, subslotname FROM pg_catalog.pg_subscription WHERE subname = $1"
-	err = txn.QueryRow(query, pqQuoteLiteral(subName)).Scan(&connInfo, pq.Array(&publications), &slotName)
+	err = txn.QueryRow(query, pqQuoteLiteral(subName)).Scan(&connInfo, &publications, &slotName)
 
 	if err != nil {
 		// we already checked that the subscription exists
@@ -190,17 +189,17 @@ func resourcePostgreSQLSubscriptionDelete(db *DBConnection, d *schema.ResourceDa
 
 	// disable subscription and unset the slot before dropping in order to keep the replication slot
 	if !createSlot {
-		sql := fmt.Sprintf("ALTER SUBSCRIPTION %s DISABLE", pq.QuoteIdentifier(subName))
+		sql := fmt.Sprintf("ALTER SUBSCRIPTION %s DISABLE", pqQuoteIdentifier(subName))
 		if _, err := conn.Exec(sql); err != nil {
 			return fmt.Errorf("could not execute sql: %w", err)
 		}
-		sql = fmt.Sprintf("ALTER SUBSCRIPTION %s SET (slot_name = NONE)", pq.QuoteIdentifier(subName))
+		sql = fmt.Sprintf("ALTER SUBSCRIPTION %s SET (slot_name = NONE)", pqQuoteIdentifier(subName))
 		if _, err := conn.Exec(sql); err != nil {
 			return fmt.Errorf("could not execute sql: %w", err)
 		}
 	}
 
-	sql := fmt.Sprintf("DROP SUBSCRIPTION %s", pq.QuoteIdentifier(subName))
+	sql := fmt.Sprintf("DROP SUBSCRIPTION %s", pqQuoteIdentifier(subName))
 
 	if _, err := conn.Exec(sql); err != nil {
 		return fmt.Errorf("could not execute sql: %w", err)
@@ -258,7 +257,7 @@ func getPublicationsForSubscription(d *schema.ResourceData) (string, error) {
 		return publicationsString, fmt.Errorf("'%s' is duplicated for attribute publications", elem.(string))
 	}
 	for _, p := range publications {
-		plist = append(plist, pq.QuoteIdentifier(p.(string)))
+		plist = append(plist, pqQuoteIdentifier(p.(string)))
 	}
 
 	return strings.Join(plist, ", "), nil
@@ -323,7 +322,7 @@ func getOptionalParameters(d *schema.ResourceData) string {
 		params = append(params, fmt.Sprintf("%s = %t", "create_slot", createSlot.(bool)))
 	}
 	if okName {
-		params = append(params, fmt.Sprintf("%s = %s", "slot_name", pq.QuoteLiteral(slotName.(string))))
+		params = append(params, fmt.Sprintf("%s = %s", "slot_name", quoteLiteral(slotName.(string))))
 	}
 
 	returnValue = fmt.Sprintf(parameterSQLTemplate, strings.Join(params, ", "))

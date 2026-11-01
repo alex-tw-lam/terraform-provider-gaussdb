@@ -9,7 +9,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/lib/pq"
 )
 
 const (
@@ -391,9 +390,9 @@ func createFunction(db *DBConnection, d *schema.ResourceData, replace bool) erro
 
 	b.WriteString("FUNCTION ")
 
-	fmt.Fprint(b, pq.QuoteIdentifier(pgFunction.Schema), ".")
+	fmt.Fprint(b, pqQuoteIdentifier(pgFunction.Schema), ".")
 
-	fmt.Fprint(b, pq.QuoteIdentifier(pgFunction.Name), " (")
+	fmt.Fprint(b, pqQuoteIdentifier(pgFunction.Name), " (")
 
 	for i, arg := range pgFunction.Args {
 		if i > 0 {
@@ -538,7 +537,7 @@ func quoteSignature(s string) (signature string, err error) {
 	name, nameFound := signatureData["Name"]
 	args, argsFound := signatureData["Args"]
 	if schemaFound && nameFound && argsFound {
-		return fmt.Sprintf("%s.%s(%s)", pq.QuoteIdentifier(schemaName), pq.QuoteIdentifier(name), args), nil
+		return fmt.Sprintf("%s.%s(%s)", pqQuoteIdentifier(schemaName), pqQuoteIdentifier(name), args), nil
 	}
 
 	return "", fmt.Errorf("incorrect signature format \"%s\". The expected format is schema.function_name(arguments)", s)

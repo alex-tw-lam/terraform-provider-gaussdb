@@ -10,7 +10,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/lib/pq"
 )
 
 const (
@@ -155,24 +154,24 @@ func createDatabase(db *DBConnection, d *schema.ResourceData) error {
 
 	dbName := d.Get(dbNameAttr).(string)
 	b := bytes.NewBufferString("CREATE DATABASE ")
-	fmt.Fprint(b, pq.QuoteIdentifier(dbName))
+	fmt.Fprint(b, pqQuoteIdentifier(dbName))
 
 	// Handle each option individually and stream results into the query
 	// buffer.
 	switch v, ok := d.GetOk(dbOwnerAttr); {
 	case ok:
-		fmt.Fprint(b, " OWNER ", pq.QuoteIdentifier(v.(string)))
+		fmt.Fprint(b, " OWNER ", pqQuoteIdentifier(v.(string)))
 	default:
 		// No owner specified in the config, default to using
 		// the connecting username.
-		fmt.Fprint(b, " OWNER ", pq.QuoteIdentifier(currentUser))
+		fmt.Fprint(b, " OWNER ", pqQuoteIdentifier(currentUser))
 	}
 
 	switch v, ok := d.GetOk(dbTemplateAttr); {
 	case ok && strings.ToUpper(v.(string)) == "DEFAULT":
 		fmt.Fprint(b, " TEMPLATE DEFAULT")
 	case ok:
-		fmt.Fprint(b, " TEMPLATE ", pq.QuoteIdentifier(v.(string)))
+		fmt.Fprint(b, " TEMPLATE ", pqQuoteIdentifier(v.(string)))
 	case v.(string) == "":
 		fmt.Fprint(b, " TEMPLATE template0")
 	}
@@ -208,7 +207,7 @@ func createDatabase(db *DBConnection, d *schema.ResourceData) error {
 	case ok && strings.ToUpper(v.(string)) == "DEFAULT":
 		fmt.Fprint(b, " TABLESPACE DEFAULT")
 	case ok:
-		fmt.Fprint(b, " TABLESPACE ", pq.QuoteIdentifier(v.(string)))
+		fmt.Fprint(b, " TABLESPACE ", pqQuoteIdentifier(v.(string)))
 	}
 
 	if db.featureSupported(featureDBAllowConnections) {
@@ -287,7 +286,7 @@ func resourcePostgreSQLDatabaseDelete(db *DBConnection, d *schema.ResourceData) 
 		dropWithForce = "WITH ( FORCE )"
 	}
 
-	sql := fmt.Sprintf("DROP DATABASE %s %s", pq.QuoteIdentifier(dbName), dropWithForce)
+	sql := fmt.Sprintf("DROP DATABASE %s %s", pqQuoteIdentifier(dbName), dropWithForce)
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error dropping database: %w", err)
 	}
@@ -441,7 +440,7 @@ func setDBName(db QueryAble, d *schema.ResourceData) error {
 		return errors.New("error setting database name to an empty string")
 	}
 
-	sql := fmt.Sprintf("ALTER DATABASE %s RENAME TO %s", pq.QuoteIdentifier(o), pq.QuoteIdentifier(n))
+	sql := fmt.Sprintf("ALTER DATABASE %s RENAME TO %s", pqQuoteIdentifier(o), pqQuoteIdentifier(n))
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error updating database name: %w", err)
 	}
@@ -480,7 +479,7 @@ func setDBOwner(db *DBConnection, d *schema.ResourceData) error {
 
 	dbName := d.Get(dbNameAttr).(string)
 
-	sql := fmt.Sprintf("ALTER DATABASE %s OWNER TO %s", pq.QuoteIdentifier(dbName), pq.QuoteIdentifier(owner))
+	sql := fmt.Sprintf("ALTER DATABASE %s OWNER TO %s", pqQuoteIdentifier(dbName), pqQuoteIdentifier(owner))
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error updating database OWNER: %w", err)
 	}
@@ -531,7 +530,7 @@ func setAlterOwnership(db *DBConnection, d *schema.ResourceData) error {
 			_, err = revokeRoleMembership(db, currentOwner, currentUser)
 		}()
 	}
-	sql := fmt.Sprintf("REASSIGN OWNED BY %s TO %s", pq.QuoteIdentifier(currentOwner), pq.QuoteIdentifier(newOwner))
+	sql := fmt.Sprintf("REASSIGN OWNED BY %s TO %s", pqQuoteIdentifier(currentOwner), pqQuoteIdentifier(newOwner))
 	if _, err := lockTxn.Exec(sql); err != nil {
 		return fmt.Errorf("error reassigning objects owned by '%s': %w", currentOwner, err)
 	}
@@ -551,9 +550,9 @@ func setDBTablespace(db QueryAble, d *schema.ResourceData) error {
 	dbName := d.Get(dbNameAttr).(string)
 	var sql string
 	if tbspName == "" || strings.ToUpper(tbspName) == "DEFAULT" {
-		sql = fmt.Sprintf("ALTER DATABASE %s RESET TABLESPACE", pq.QuoteIdentifier(dbName))
+		sql = fmt.Sprintf("ALTER DATABASE %s RESET TABLESPACE", pqQuoteIdentifier(dbName))
 	} else {
-		sql = fmt.Sprintf("ALTER DATABASE %s SET TABLESPACE %s", pq.QuoteIdentifier(dbName), pq.QuoteIdentifier(tbspName))
+		sql = fmt.Sprintf("ALTER DATABASE %s SET TABLESPACE %s", pqQuoteIdentifier(dbName), pqQuoteIdentifier(tbspName))
 	}
 
 	if _, err := db.Exec(sql); err != nil {
@@ -570,7 +569,7 @@ func setDBConnLimit(db QueryAble, d *schema.ResourceData) error {
 
 	connLimit := d.Get(dbConnLimitAttr).(int)
 	dbName := d.Get(dbNameAttr).(string)
-	sql := fmt.Sprintf("ALTER DATABASE %s CONNECTION LIMIT = %d", pq.QuoteIdentifier(dbName), connLimit)
+	sql := fmt.Sprintf("ALTER DATABASE %s CONNECTION LIMIT = %d", pqQuoteIdentifier(dbName), connLimit)
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error updating database CONNECTION LIMIT: %w", err)
 	}
@@ -589,7 +588,7 @@ func setDBAllowConns(db *DBConnection, d *schema.ResourceData) error {
 
 	allowConns := d.Get(dbAllowConnsAttr).(bool)
 	dbName := d.Get(dbNameAttr).(string)
-	sql := fmt.Sprintf("ALTER DATABASE %s ALLOW_CONNECTIONS %t", pq.QuoteIdentifier(dbName), allowConns)
+	sql := fmt.Sprintf("ALTER DATABASE %s ALLOW_CONNECTIONS %t", pqQuoteIdentifier(dbName), allowConns)
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error updating database ALLOW_CONNECTIONS: %w", err)
 	}
@@ -614,7 +613,7 @@ func doSetDBIsTemplate(db *DBConnection, dbName string, isTemplate bool) error {
 		return fmt.Errorf("PostgreSQL client is talking with a server (%q) that does not support database IS_TEMPLATE", db.version.String())
 	}
 
-	sql := fmt.Sprintf("ALTER DATABASE %s IS_TEMPLATE %t", pq.QuoteIdentifier(dbName), isTemplate)
+	sql := fmt.Sprintf("ALTER DATABASE %s IS_TEMPLATE %t", pqQuoteIdentifier(dbName), isTemplate)
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error updating database IS_TEMPLATE: %w", err)
 	}
@@ -626,7 +625,7 @@ func terminateBConnections(db *DBConnection, dbName string) error {
 	var terminateSql string
 
 	if db.featureSupported(featureDBAllowConnections) {
-		alterSql := fmt.Sprintf("ALTER DATABASE %s ALLOW_CONNECTIONS false", pq.QuoteIdentifier(dbName))
+		alterSql := fmt.Sprintf("ALTER DATABASE %s ALLOW_CONNECTIONS false", pqQuoteIdentifier(dbName))
 
 		if _, err := db.Exec(alterSql); err != nil {
 			return fmt.Errorf("error blocking connections to database: %w", err)

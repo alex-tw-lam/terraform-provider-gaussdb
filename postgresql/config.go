@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/HuaweiCloudDeveloper/gaussdb-go/gaussdbconn"
 	"github.com/blang/semver"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	"github.com/lib/pq"
 	"gocloud.dev/gcp"
 	"gocloud.dev/gcp/cloudsql"
 	"gocloud.dev/postgres"
@@ -234,15 +234,16 @@ func (c *Config) connParams() []string {
 		params["connect_timeout"] = strconv.Itoa(c.ConnectTimeoutSec)
 	}
 
+	// The gaussdb driver sends unrecognized DSN parameters to the server as
+	// startup parameters, which the server rejects; application_name is a
+	// real GUC on both PostgreSQL and openGauss, so use it directly instead
+	// of lib/pq's client-side fallback_application_name.
 	if c.featureSupported(featureFallbackApplicationName) {
-		params["fallback_application_name"] = c.ApplicationName
+		params["application_name"] = c.ApplicationName
 	}
 	if c.SSLClientCert != nil {
 		params["sslcert"] = c.SSLClientCert.CertificatePath
 		params["sslkey"] = c.SSLClientCert.KeyPath
-		if c.SSLClientCert.SSLInline {
-			params["sslinline"] = strconv.FormatBool(c.SSLClientCert.SSLInline)
-		}
 	}
 
 	if c.SSLRootCertPath != "" {
@@ -265,9 +266,16 @@ func (c *Config) connStr(database string) string {
 		host = strings.ReplaceAll(host, ":", "/")
 	}
 
+	urlScheme := c.Scheme
+	if c.Scheme == "postgres" {
+		// gaussdb-go parses URL DSNs only when they start with gaussdb://;
+		// a postgres:// URL would be misread as keyword/value format.
+		urlScheme = "gaussdb"
+	}
+
 	connStr := fmt.Sprintf(
 		"%s://%s:%s@%s:%d/%s?%s",
-		c.Scheme,
+		urlScheme,
 		url.PathEscape(c.Username),
 		url.PathEscape(c.Password),
 		host,
@@ -291,6 +299,14 @@ func (c *Config) getDatabaseUsername() string {
 // Query() must have their rows.Close()'ed.
 func (c *Client) Connect() (*DBConnection, error) {
 	ctx := context.Background()
+
+	if c.config.SSLClientCert != nil && c.config.SSLClientCert.SSLInline {
+		// lib/pq read the certificate and key from the DSN values; the
+		// gaussdb driver only accepts file paths and would reject the
+		// unknown sslinline startup parameter server-side.
+		return nil, fmt.Errorf("ssl_inline is not supported by the gaussdb driver; provide sslcert and sslkey file paths")
+	}
+
 	dsn := c.config.connStr(c.databaseName)
 
 	dbRegistryLock.Lock()
@@ -393,9 +409,9 @@ func (c *Client) connectWithRetry(ctx context.Context, postgresDriverName, dsn s
 // configuration error (bad credentials, unknown database) that will not be
 // fixed by retrying.
 func isRetryableConnectionError(err error) bool {
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		switch pqErr.Code.Class() {
+	var gaussErr *gaussdbconn.GaussdbError
+	if errors.As(err, &gaussErr) && len(gaussErr.Code) >= 2 {
+		switch gaussErr.Code[:2] {
 		case "28", // Invalid Authorization Specification
 			"3D": // Invalid Catalog Name
 			return false

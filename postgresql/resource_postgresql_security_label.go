@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 )
 
 const (
@@ -67,7 +66,7 @@ func resourcePostgreSQLSecurityLabelCreate(db *DBConnection, d *schema.ResourceD
 	}
 	log.Printf("[DEBUG] PostgreSQL security label Create")
 	label := d.Get(securityLabelLabelAttr).(string)
-	if err := resourcePostgreSQLSecurityLabelUpdateImpl(db, d, pq.QuoteLiteral(label)); err != nil {
+	if err := resourcePostgreSQLSecurityLabelUpdateImpl(db, d, quoteLiteral(label)); err != nil {
 		return err
 	}
 
@@ -82,8 +81,8 @@ func resourcePostgreSQLSecurityLabelUpdateImpl(db *DBConnection, d *schema.Resou
 	objectType := d.Get(securityLabelObjectTypeAttr).(string)
 	objectName := d.Get(securityLabelObjectNameAttr).(string)
 	provider := d.Get(securityLabelProviderAttr).(string)
-	fmt.Fprint(b, " FOR ", pq.QuoteIdentifier(provider))
-	fmt.Fprint(b, " ON ", objectType, pq.QuoteIdentifier(objectName))
+	fmt.Fprint(b, " FOR ", pqQuoteIdentifier(provider))
+	fmt.Fprint(b, " ON ", objectType, pqQuoteIdentifier(objectName))
 	fmt.Fprint(b, " IS ", label)
 
 	if _, err := db.Exec(b.String()); err != nil {
@@ -173,7 +172,7 @@ func resourcePostgreSQLSecurityLabelUpdate(db *DBConnection, d *schema.ResourceD
 	log.Printf("[DEBUG] PostgreSQL security label Update")
 
 	label := d.Get(securityLabelLabelAttr).(string)
-	if err := resourcePostgreSQLSecurityLabelUpdateImpl(db, d, pq.QuoteLiteral(label)); err != nil {
+	if err := resourcePostgreSQLSecurityLabelUpdateImpl(db, d, quoteLiteral(label)); err != nil {
 		return err
 	}
 
@@ -192,7 +191,7 @@ func quoteIdentifier(s string) string {
 	var result = s
 	re := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 	if !re.MatchString(s) || s != strings.ToLower(s) {
-		result = pq.QuoteIdentifier(s)
+		result = pqQuoteIdentifier(s)
 	}
 	return result
 }

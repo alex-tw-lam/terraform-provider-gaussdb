@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/lib/pq"
 )
 
 const (
@@ -89,24 +88,24 @@ func resourcePostgreSQLServerCreate(db *DBConnection, d *schema.ResourceData) er
 	serverName := d.Get(serverNameAttr).(string)
 
 	b := bytes.NewBufferString("CREATE SERVER ")
-	fmt.Fprint(b, pq.QuoteIdentifier(serverName))
+	fmt.Fprint(b, pqQuoteIdentifier(serverName))
 
 	if v, ok := d.GetOk(serverTypeAttr); ok {
-		fmt.Fprint(b, " TYPE ", pq.QuoteLiteral(v.(string)))
+		fmt.Fprint(b, " TYPE ", quoteLiteral(v.(string)))
 	}
 
 	if v, ok := d.GetOk(serverVersionAttr); ok {
-		fmt.Fprint(b, " VERSION ", pq.QuoteLiteral(v.(string)))
+		fmt.Fprint(b, " VERSION ", quoteLiteral(v.(string)))
 	}
 
-	fmt.Fprint(b, " FOREIGN DATA WRAPPER ", pq.QuoteIdentifier(d.Get(serverFDWAttr).(string)))
+	fmt.Fprint(b, " FOREIGN DATA WRAPPER ", pqQuoteIdentifier(d.Get(serverFDWAttr).(string)))
 
 	if options, ok := d.GetOk(serverOptionsAttr); ok {
 		fmt.Fprint(b, " OPTIONS ( ")
 		cnt := 0
 		len := len(options.(map[string]any))
 		for k, v := range options.(map[string]any) {
-			fmt.Fprint(b, " ", pq.QuoteIdentifier(k), " ", pq.QuoteLiteral(v.(string)))
+			fmt.Fprint(b, " ", pqQuoteIdentifier(k), " ", quoteLiteral(v.(string)))
 			if cnt < len-1 {
 				fmt.Fprint(b, ", ")
 			}
@@ -167,11 +166,11 @@ func resourcePostgreSQLServerReadImpl(db *DBConnection, d *schema.ResourceData) 
 	defer deferredRollback(txn)
 
 	var serverType, serverVersion, serverOwner, serverFDW string
-	var serverOptions []string
+	var serverOptions pgStringArray
 	query := `SELECT COALESCE(fs.srvtype, ''), COALESCE(fs.srvversion, ''), fs.srvowner::regrole, fs.srvoptions, w.fdwname ` +
 		`FROM pg_foreign_server fs JOIN pg_foreign_data_wrapper w on w.oid = fs.srvfdw ` +
 		`WHERE fs.srvname = $1`
-	err = txn.QueryRow(query, serverName).Scan(&serverType, &serverVersion, &serverOwner, pq.Array(&serverOptions), &serverFDW)
+	err = txn.QueryRow(query, serverName).Scan(&serverType, &serverVersion, &serverOwner, &serverOptions, &serverFDW)
 	switch {
 	case err == sql.ErrNoRows:
 		log.Printf("[WARN] PostgreSQL foreign server (%s) not found", serverName)
@@ -219,7 +218,7 @@ func resourcePostgreSQLServerDelete(db *DBConnection, d *schema.ResourceData) er
 		dropMode = "CASCADE"
 	}
 
-	sql := fmt.Sprintf("DROP SERVER %s %s ", pq.QuoteIdentifier(serverName), dropMode)
+	sql := fmt.Sprintf("DROP SERVER %s %s ", pqQuoteIdentifier(serverName), dropMode)
 	if _, err := txn.Exec(sql); err != nil {
 		return err
 	}
@@ -274,10 +273,10 @@ func setServerVersionOptionsIfChanged(txn *sql.Tx, d *schema.ResourceData) error
 	b := bytes.NewBufferString("ALTER SERVER ")
 	serverName := d.Get(serverNameAttr).(string)
 
-	fmt.Fprintf(b, "%s ", pq.QuoteIdentifier(serverName))
+	fmt.Fprintf(b, "%s ", pqQuoteIdentifier(serverName))
 
 	if d.HasChange(serverVersionAttr) {
-		fmt.Fprintf(b, "VERSION %s", pq.QuoteLiteral(d.Get(serverVersionAttr).(string)))
+		fmt.Fprintf(b, "VERSION %s", quoteLiteral(d.Get(serverVersionAttr).(string)))
 	}
 
 	if d.HasChange(serverOptionsAttr) {
@@ -292,7 +291,7 @@ func setServerVersionOptionsIfChanged(txn *sql.Tx, d *schema.ResourceData) error
 				operation = "SET"
 				delete(toRemove, k)
 			}
-			fmt.Fprintf(b, " %s %s %s ", operation, pq.QuoteIdentifier(k), pq.QuoteLiteral(v.(string)))
+			fmt.Fprintf(b, " %s %s %s ", operation, pqQuoteIdentifier(k), quoteLiteral(v.(string)))
 			if cnt < len-1 {
 				fmt.Fprint(b, ", ")
 			}
@@ -303,7 +302,7 @@ func setServerVersionOptionsIfChanged(txn *sql.Tx, d *schema.ResourceData) error
 			if cnt != 0 { // starting with 0 means to drop all the options. Cannot start with comma
 				fmt.Fprint(b, " , ")
 			}
-			fmt.Fprintf(b, " DROP %s ", pq.QuoteIdentifier(k))
+			fmt.Fprintf(b, " DROP %s ", pqQuoteIdentifier(k))
 			cnt++
 		}
 
@@ -326,7 +325,7 @@ func setServerNameIfChanged(txn *sql.Tx, d *schema.ResourceData) error {
 	serverOldName, serverNewName := d.GetChange(serverNameAttr)
 
 	b := bytes.NewBufferString("ALTER SERVER ")
-	fmt.Fprintf(b, "%s RENAME TO %s", pq.QuoteIdentifier(serverOldName.(string)), pq.QuoteIdentifier(serverNewName.(string)))
+	fmt.Fprintf(b, "%s RENAME TO %s", pqQuoteIdentifier(serverOldName.(string)), pqQuoteIdentifier(serverNewName.(string)))
 
 	sql := b.String()
 	if _, err := txn.Exec(sql); err != nil {
@@ -348,7 +347,7 @@ func setServerOwner(txn *sql.Tx, d *schema.ResourceData) error {
 	serverNewOwner := d.Get(serverOwnerAttr).(string)
 
 	b := bytes.NewBufferString("ALTER SERVER ")
-	fmt.Fprintf(b, "%s OWNER TO %s", pq.QuoteIdentifier(serverName), pq.QuoteIdentifier(serverNewOwner))
+	fmt.Fprintf(b, "%s OWNER TO %s", pqQuoteIdentifier(serverName), pqQuoteIdentifier(serverNewOwner))
 
 	sql := b.String()
 	if _, err := txn.Exec(sql); err != nil {

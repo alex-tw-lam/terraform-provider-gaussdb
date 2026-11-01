@@ -8,9 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-
 	// Use Postgres as SQL driver
-	"github.com/lib/pq"
 )
 
 var allowedObjectTypes = []string{
@@ -273,7 +271,7 @@ FROM (
 WHERE grantee = $2
 `
 
-	var privileges pq.ByteaArray
+	var privileges pgByteaArray
 	if err := txn.QueryRow(query, dbName, roleOID).Scan(&privileges); err != nil {
 		return fmt.Errorf("could not read privileges for database %s: %w", dbName, err)
 	}
@@ -294,7 +292,7 @@ FROM (
 WHERE grantee = $2
 `
 
-	var privileges pq.ByteaArray
+	var privileges pgByteaArray
 	if err := txn.QueryRow(query, dbName, roleOID).Scan(&privileges); err != nil {
 		return fmt.Errorf("could not read privileges for schema %s: %w", dbName, err)
 	}
@@ -317,7 +315,7 @@ FROM (
 WHERE grantee = $2
 `
 
-	var privileges pq.ByteaArray
+	var privileges pgByteaArray
 	if err := txn.QueryRow(query, fdwName, roleOID).Scan(&privileges); err != nil {
 		return fmt.Errorf("could not read privileges for foreign data wrapper %s: %w", fdwName, err)
 	}
@@ -340,7 +338,7 @@ FROM (
 WHERE grantee = $2
 `
 
-	var privileges pq.ByteaArray
+	var privileges pgByteaArray
 	if err := txn.QueryRow(query, srvName, roleOID).Scan(&privileges); err != nil {
 		return fmt.Errorf("could not read privileges for foreign server %s: %w", srvName, err)
 	}
@@ -388,7 +386,7 @@ ORDER BY col_privs.attname
 	for rows.Next() {
 		var objName string
 		var colName string
-		var privileges pq.ByteaArray
+		var privileges pgByteaArray
 
 		if err := rows.Scan(&objName, &colName, &privileges); err != nil {
 			return err
@@ -510,7 +508,7 @@ GROUP BY pg_class.relname
 
 	for rows.Next() {
 		var objName string
-		var privileges pq.ByteaArray
+		var privileges pgByteaArray
 
 		if err := rows.Scan(&objName, &privileges); err != nil {
 			return err
@@ -544,31 +542,31 @@ func createGrantQuery(d *schema.ResourceData, privileges []string) string {
 		query = fmt.Sprintf(
 			"GRANT %s ON DATABASE %s TO %s",
 			strings.Join(privileges, ","),
-			pq.QuoteIdentifier(d.Get("database").(string)),
-			pq.QuoteIdentifier(d.Get("role").(string)),
+			pqQuoteIdentifier(d.Get("database").(string)),
+			pqQuoteIdentifier(d.Get("role").(string)),
 		)
 	case "SCHEMA":
 		query = fmt.Sprintf(
 			"GRANT %s ON SCHEMA %s TO %s",
 			strings.Join(privileges, ","),
-			pq.QuoteIdentifier(d.Get("schema").(string)),
-			pq.QuoteIdentifier(d.Get("role").(string)),
+			pqQuoteIdentifier(d.Get("schema").(string)),
+			pqQuoteIdentifier(d.Get("role").(string)),
 		)
 	case "FOREIGN_DATA_WRAPPER":
 		fdwName := d.Get("objects").(*schema.Set).List()[0]
 		query = fmt.Sprintf(
 			"GRANT %s ON FOREIGN DATA WRAPPER %s TO %s",
 			strings.Join(privileges, ","),
-			pq.QuoteIdentifier(fdwName.(string)),
-			pq.QuoteIdentifier(d.Get("role").(string)),
+			pqQuoteIdentifier(fdwName.(string)),
+			pqQuoteIdentifier(d.Get("role").(string)),
 		)
 	case "FOREIGN_SERVER":
 		srvName := d.Get("objects").(*schema.Set).List()[0]
 		query = fmt.Sprintf(
 			"GRANT %s ON FOREIGN SERVER %s TO %s",
 			strings.Join(privileges, ","),
-			pq.QuoteIdentifier(srvName.(string)),
-			pq.QuoteIdentifier(d.Get("role").(string)),
+			pqQuoteIdentifier(srvName.(string)),
+			pqQuoteIdentifier(d.Get("role").(string)),
 		)
 	case "COLUMN":
 		objects := d.Get("objects").(*schema.Set)
@@ -577,7 +575,7 @@ func createGrantQuery(d *schema.ResourceData, privileges []string) string {
 			strings.Join(privileges, ","),
 			setToPgIdentListWithoutSchema(d.Get("columns").(*schema.Set)),
 			setToPgIdentList(d.Get("schema").(string), objects),
-			pq.QuoteIdentifier(d.Get("role").(string)),
+			pqQuoteIdentifier(d.Get("role").(string)),
 		)
 	case "TABLE", "SEQUENCE", "FUNCTION", "PROCEDURE", "ROUTINE":
 		objects := d.Get("objects").(*schema.Set)
@@ -587,15 +585,15 @@ func createGrantQuery(d *schema.ResourceData, privileges []string) string {
 				strings.Join(privileges, ","),
 				strings.ToUpper(d.Get("object_type").(string)),
 				setToPgIdentList(d.Get("schema").(string), objects),
-				pq.QuoteIdentifier(d.Get("role").(string)),
+				pqQuoteIdentifier(d.Get("role").(string)),
 			)
 		} else {
 			query = fmt.Sprintf(
 				"GRANT %s ON ALL %sS IN SCHEMA %s TO %s",
 				strings.Join(privileges, ","),
 				strings.ToUpper(d.Get("object_type").(string)),
-				pq.QuoteIdentifier(d.Get("schema").(string)),
-				pq.QuoteIdentifier(d.Get("role").(string)),
+				pqQuoteIdentifier(d.Get("schema").(string)),
+				pqQuoteIdentifier(d.Get("role").(string)),
 			)
 		}
 	}
@@ -614,28 +612,28 @@ func createRevokeQuery(getter ResourceSchemeGetter) string {
 	case "DATABASE":
 		query = fmt.Sprintf(
 			"REVOKE ALL PRIVILEGES ON DATABASE %s FROM %s",
-			pq.QuoteIdentifier(getter("database").(string)),
-			pq.QuoteIdentifier(getter("role").(string)),
+			pqQuoteIdentifier(getter("database").(string)),
+			pqQuoteIdentifier(getter("role").(string)),
 		)
 	case "SCHEMA":
 		query = fmt.Sprintf(
 			"REVOKE ALL PRIVILEGES ON SCHEMA %s FROM %s",
-			pq.QuoteIdentifier(getter("schema").(string)),
-			pq.QuoteIdentifier(getter("role").(string)),
+			pqQuoteIdentifier(getter("schema").(string)),
+			pqQuoteIdentifier(getter("role").(string)),
 		)
 	case "FOREIGN_DATA_WRAPPER":
 		fdwName := getter("objects").(*schema.Set).List()[0]
 		query = fmt.Sprintf(
 			"REVOKE ALL PRIVILEGES ON FOREIGN DATA WRAPPER %s FROM %s",
-			pq.QuoteIdentifier(fdwName.(string)),
-			pq.QuoteIdentifier(getter("role").(string)),
+			pqQuoteIdentifier(fdwName.(string)),
+			pqQuoteIdentifier(getter("role").(string)),
 		)
 	case "FOREIGN_SERVER":
 		srvName := getter("objects").(*schema.Set).List()[0]
 		query = fmt.Sprintf(
 			"REVOKE ALL PRIVILEGES ON FOREIGN SERVER %s FROM %s",
-			pq.QuoteIdentifier(srvName.(string)),
-			pq.QuoteIdentifier(getter("role").(string)),
+			pqQuoteIdentifier(srvName.(string)),
+			pqQuoteIdentifier(getter("role").(string)),
 		)
 	case "COLUMN":
 		objects := getter("objects").(*schema.Set)
@@ -650,7 +648,7 @@ func createRevokeQuery(getter ResourceSchemeGetter) string {
 				setToPgIdentSimpleList(privileges),
 				setToPgIdentListWithoutSchema(columns),
 				setToPgIdentList(getter("schema").(string), objects),
-				pq.QuoteIdentifier(getter("role").(string)),
+				pqQuoteIdentifier(getter("role").(string)),
 			)
 		}
 	case "TABLE", "SEQUENCE", "FUNCTION", "PROCEDURE", "ROUTINE":
@@ -665,22 +663,22 @@ func createRevokeQuery(getter ResourceSchemeGetter) string {
 					setToPgIdentSimpleList(privileges),
 					strings.ToUpper(getter("object_type").(string)),
 					setToPgIdentList(getter("schema").(string), objects),
-					pq.QuoteIdentifier(getter("role").(string)),
+					pqQuoteIdentifier(getter("role").(string)),
 				)
 			} else {
 				query = fmt.Sprintf(
 					"REVOKE ALL PRIVILEGES ON %s %s FROM %s",
 					strings.ToUpper(getter("object_type").(string)),
 					setToPgIdentList(getter("schema").(string), objects),
-					pq.QuoteIdentifier(getter("role").(string)),
+					pqQuoteIdentifier(getter("role").(string)),
 				)
 			}
 		} else {
 			query = fmt.Sprintf(
 				"REVOKE ALL PRIVILEGES ON ALL %sS IN SCHEMA %s FROM %s",
 				strings.ToUpper(getter("object_type").(string)),
-				pq.QuoteIdentifier(getter("schema").(string)),
-				pq.QuoteIdentifier(getter("role").(string)),
+				pqQuoteIdentifier(getter("schema").(string)),
+				pqQuoteIdentifier(getter("role").(string)),
 			)
 		}
 	}

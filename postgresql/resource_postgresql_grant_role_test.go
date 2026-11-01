@@ -9,7 +9,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
-	"github.com/lib/pq"
 )
 
 func TestCreateGrantRoleQuery(t *testing.T) {
@@ -25,7 +24,7 @@ func TestCreateGrantRoleQuery(t *testing.T) {
 				"role":       roleName,
 				"grant_role": grantRoleName,
 			},
-			expected: fmt.Sprintf("GRANT %s TO %s", pq.QuoteIdentifier(grantRoleName), pq.QuoteIdentifier(roleName)),
+			expected: fmt.Sprintf("GRANT %s TO %s", pqQuoteIdentifier(grantRoleName), pqQuoteIdentifier(roleName)),
 		},
 		{
 			resource: map[string]any{
@@ -33,7 +32,7 @@ func TestCreateGrantRoleQuery(t *testing.T) {
 				"grant_role":        grantRoleName,
 				"with_admin_option": false,
 			},
-			expected: fmt.Sprintf("GRANT %s TO %s", pq.QuoteIdentifier(grantRoleName), pq.QuoteIdentifier(roleName)),
+			expected: fmt.Sprintf("GRANT %s TO %s", pqQuoteIdentifier(grantRoleName), pqQuoteIdentifier(roleName)),
 		},
 		{
 			resource: map[string]any{
@@ -41,7 +40,7 @@ func TestCreateGrantRoleQuery(t *testing.T) {
 				"grant_role":        grantRoleName,
 				"with_admin_option": true,
 			},
-			expected: fmt.Sprintf("GRANT %s TO %s WITH ADMIN OPTION", pq.QuoteIdentifier(grantRoleName), pq.QuoteIdentifier(roleName)),
+			expected: fmt.Sprintf("GRANT %s TO %s WITH ADMIN OPTION", pqQuoteIdentifier(grantRoleName), pqQuoteIdentifier(roleName)),
 		},
 	}
 
@@ -57,7 +56,7 @@ func TestRevokeRoleQuery(t *testing.T) {
 	var roleName = "foo"
 	var grantRoleName = "bar"
 
-	expected := fmt.Sprintf("REVOKE %s FROM %s", pq.QuoteIdentifier(grantRoleName), pq.QuoteIdentifier(roleName))
+	expected := fmt.Sprintf("REVOKE %s FROM %s", pqQuoteIdentifier(grantRoleName), pqQuoteIdentifier(roleName))
 
 	cases := []struct {
 		resource map[string]any
