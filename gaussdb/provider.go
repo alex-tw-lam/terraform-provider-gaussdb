@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -44,16 +46,35 @@ func Provider() *schema.Provider {
 				}, false),
 			},
 			"host": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				DefaultFunc: schema.EnvDefaultFunc("PGHOST", nil),
-				Description: "Name of PostgreSQL server address to connect to",
+				Type:          schema.TypeString,
+				Optional:      true,
+				DefaultFunc:   schema.EnvDefaultFunc("PGHOST", nil),
+				ConflictsWith: []string{"hosts"},
+				Description:   "Name of the GaussDB server address to connect to (standalone form)",
+			},
+			"hosts": {
+				Type:          schema.TypeList,
+				Optional:      true,
+				ConflictsWith: []string{"host"},
+				Elem: &schema.Schema{
+					Type:         schema.TypeString,
+					ValidateFunc: validateHostPort,
+				},
+				Description: "Seed list of GaussDB node addresses for HA — each entry is host or host:port (entries without a port use `port`). The driver walks the list per target_session_attrs, so the provider keeps working across node failover. Mutually exclusive with host",
+			},
+			"target_session_attrs": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Default:  "primary",
+				ValidateFunc: validation.StringInSlice(
+					[]string{"any", "primary", "read-only", "standby", "prefer-standby"}, false),
+				Description: "Which node a seed-list connection must land on (libpq semantics). Defaults to primary — the admin plane must run its DDL on the primary. Ignored when host is used",
 			},
 			"port": {
 				Type:        schema.TypeInt,
 				Optional:    true,
 				DefaultFunc: schema.EnvDefaultFunc("PGPORT", 5432),
-				Description: "The PostgreSQL port number to connect to at the server host, or socket file name extension for Unix-domain connections",
+				Description: "The GaussDB port number to connect to (used for host, and for hosts entries that do not carry their own port)",
 			},
 			"database": {
 				Type:        schema.TypeString,
@@ -255,6 +276,32 @@ func Provider() *schema.Provider {
 	}
 }
 
+// hostPortPattern matches a host optionally followed by :port — the form
+// each seed-list entry must take.
+var hostPortPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+(?::([0-9]{1,5}))?$`)
+
+// validateHostPort validates a seed-list entry: host or host:port with a
+// port in range.
+func validateHostPort(v any, key string) (warnings []string, errors []error) {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		errors = append(errors, fmt.Errorf("%q must be a host or host:port string", key))
+		return
+	}
+	m := hostPortPattern.FindStringSubmatch(s)
+	if m == nil {
+		errors = append(errors, fmt.Errorf("%q must be host or host:port, got %q", key, s))
+		return
+	}
+	if m[1] != "" {
+		p, err := strconv.Atoi(m[1])
+		if err != nil || p < 1 || p > 65535 {
+			errors = append(errors, fmt.Errorf("%q port %q out of range 1-65535", key, m[1]))
+		}
+	}
+	return
+}
+
 func validateExpectedVersion(v any, key string) (warnings []string, errors []error) {
 	if _, err := semver.ParseTolerant(v.(string)); err != nil {
 		errors = append(errors, fmt.Errorf("invalid version (%q): %w", v.(string), err))
@@ -397,9 +444,19 @@ func providerConfigure(d *schema.ResourceData) (any, error) {
 		password = d.Get("password").(string)
 	}
 
+	hosts := make([]string, 0, 2)
+	for _, h := range d.Get("hosts").([]any) {
+		hosts = append(hosts, h.(string))
+	}
+	if len(hosts) > 0 && d.Get("scheme").(string) != "postgres" {
+		return nil, fmt.Errorf("hosts (seed list) is only supported with the default postgres scheme")
+	}
+
 	config := Config{
 		Scheme:                          d.Get("scheme").(string),
 		Host:                            host,
+		Hosts:                           hosts,
+		TargetSessionAttrs:              d.Get("target_session_attrs").(string),
 		Port:                            port,
 		Username:                        username,
 		Password:                        password,

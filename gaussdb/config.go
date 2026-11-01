@@ -209,6 +209,8 @@ type ClientCertificateConfig struct {
 type Config struct {
 	Scheme                          string
 	Host                            string
+	Hosts                           []string
+	TargetSessionAttrs              string
 	Port                            int
 	Username                        string
 	Password                        string
@@ -283,6 +285,11 @@ func (c *Config) connParams() []string {
 		params["sslrootcert"] = c.SSLRootCertPath
 	}
 
+	// Only meaningful for a seed list: which node the driver must settle on.
+	if len(c.Hosts) > 0 {
+		params["target_session_attrs"] = c.TargetSessionAttrs
+	}
+
 	paramsArray := []string{}
 	for key, value := range params {
 		paramsArray = append(paramsArray, fmt.Sprintf("%s=%s", key, url.QueryEscape(value)))
@@ -299,25 +306,44 @@ func (c *Config) connStr(database string) string {
 		host = strings.ReplaceAll(host, ":", "/")
 	}
 
+	// gaussdb-go parses URL DSNs only when they start with gaussdb://;
+	// a postgres:// URL would be misread as keyword/value format.
 	urlScheme := c.Scheme
 	if c.Scheme == "postgres" {
-		// gaussdb-go parses URL DSNs only when they start with gaussdb://;
-		// a postgres:// URL would be misread as keyword/value format.
 		urlScheme = "gaussdb"
 	}
 
+	// A seed list becomes a libpq-style multi-host authority:
+	// gaussdb://user:pw@ip1:p1,ip2:p2/db?target_session_attrs=primary
+	authority := fmt.Sprintf("%s:%d", host, c.Port)
+	if len(c.Hosts) > 0 {
+		entries := make([]string, len(c.Hosts))
+		for i, h := range c.Hosts {
+			entries[i] = withDefaultPort(h, c.Port)
+		}
+		authority = strings.Join(entries, ",")
+	}
+
 	connStr := fmt.Sprintf(
-		"%s://%s:%s@%s:%d/%s?%s",
+		"%s://%s:%s@%s/%s?%s",
 		urlScheme,
 		url.PathEscape(c.Username),
 		url.PathEscape(c.Password),
-		host,
-		c.Port,
+		authority,
 		database,
 		strings.Join(c.connParams(), "&"),
 	)
 
 	return connStr
+}
+
+// withDefaultPort appends the shared port to a seed-list entry that does
+// not carry its own; the schema validator already guaranteed the shape.
+func withDefaultPort(entry string, port int) string {
+	if strings.Contains(entry, ":") {
+		return entry
+	}
+	return fmt.Sprintf("%s:%d", entry, port)
 }
 
 func (c *Config) getDatabaseUsername() string {
