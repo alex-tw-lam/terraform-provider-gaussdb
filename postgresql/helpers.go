@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
@@ -791,6 +793,81 @@ func findStringSubmatchMap(expression string, text string) map[string]string {
 
 func defaultDiffSuppressFunc(k, old, new string, d *schema.ResourceData) bool {
 	return old == new
+}
+
+// equivalentTimestamps compares two timestamp strings as instants, accepting
+// the server reporting the same moment in a different timezone or format.
+func equivalentTimestamps(old, new string) bool {
+	if old == new {
+		return true
+	}
+	layouts := []string{time.RFC3339, "2006-01-02 15:04:05.999999999-07", "2006-01-02 15:04:05.999999999-07:00", "2006-01-02T15:04:05.999999999"}
+	to, oerr := parseAnyTime(old, layouts)
+	tn, nerr := parseAnyTime(new, layouts)
+	if oerr != nil || nerr != nil {
+		return false
+	}
+	return to.Equal(tn)
+}
+
+func parseAnyTime(s string, layouts []string) (time.Time, error) {
+	var err error
+	for _, l := range layouts {
+		var t time.Time
+		t, err = time.Parse(l, s)
+		if err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, err
+}
+
+// equivalentMaxSize compares openGauss tablespace quota strings by their byte
+// value: the server normalizes "1G" to "1048576 K".
+func equivalentMaxSize(old, new string) bool {
+	if old == new {
+		return true
+	}
+	o, oerr := parseSizeBytes(old)
+	n, nerr := parseSizeBytes(new)
+	if oerr != nil || nerr != nil {
+		return false
+	}
+	return o == n
+}
+
+var sizeBytesPattern = regexp.MustCompile(`(?i)^\s*(unlimited|\d+)\s*([kmgtpe]?)b?\s*$`)
+
+// parseSizeBytes parses openGauss MAXSIZE values ("1048576 K", "1G",
+// "UNLIMITED") into bytes; UNLIMITED maps to -1.
+func parseSizeBytes(s string) (int64, error) {
+	m := sizeBytesPattern.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("invalid size %q", s)
+	}
+	if strings.EqualFold(m[1], "unlimited") {
+		return -1, nil
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	mult := int64(1)
+	switch strings.ToUpper(m[2]) {
+	case "K":
+		mult = 1024
+	case "M":
+		mult = 1024 * 1024
+	case "G":
+		mult = 1024 * 1024 * 1024
+	case "T":
+		mult = 1024 * 1024 * 1024 * 1024
+	case "P":
+		mult = 1024 * 1024 * 1024 * 1024 * 1024
+	case "E":
+		mult = 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+	}
+	return n * mult, nil
 }
 
 // quoteTable can quote a table name with or without a schema prefix

@@ -54,7 +54,9 @@ func resourcePostgreSQLReplicationSlotCreate(db *DBConnection, d *schema.Resourc
 		return err
 	}
 
-	sql := "SELECT FROM pg_create_logical_replication_slot($1, $2)"
+	// NB: bare "SELECT FROM func()" is PostgreSQL-only syntax; openGauss
+	// rejects it. "SELECT func(...)" is portable to both.
+	sql := "SELECT pg_create_logical_replication_slot($1, $2)"
 	if _, err := dbc.Exec(sql, name, plugin); err != nil {
 		return err
 	}

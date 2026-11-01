@@ -140,12 +140,32 @@ type DBConnection struct {
 	// version is the version number of the database as determined by parsing the
 	// output of `SELECT VERSION()`.x
 	version semver.Version
+
+	// gaussdb reports whether the connected server is openGauss/GaussDB,
+	// detected from the same version string. It drives the openGauss SQL
+	// dialect (role options, database clauses, tablespace quotas).
+	gaussdb bool
+}
+
+// isGaussDB reports whether the connected server speaks the openGauss/GaussDB
+// dialect rather than vanilla PostgreSQL.
+func (db *DBConnection) isGaussDB() bool {
+	return db.gaussdb
 }
 
 // featureSupported returns true if a given feature is supported or not. This is
 // slightly different from Config's featureSupported in that here we're
 // evaluating against the fingerprinted version, not the expected version.
 func (db *DBConnection) featureSupported(name featureName) bool {
+	if db.gaussdb {
+		switch name {
+		case featureDBAllowConnections, featureDBIsTemplate:
+			// openGauss CREATE/ALTER DATABASE rejects both clauses outright
+			// (syntax error), regardless of its advertised version.
+			return false
+		}
+	}
+
 	fn, found := featureSupported[name]
 	if !found {
 		// panic'ing because this is a provider-only bug
@@ -157,6 +177,18 @@ func (db *DBConnection) featureSupported(name featureName) bool {
 
 // isSuperuser returns true if connected user is a Postgres SUPERUSER
 func (db *DBConnection) isSuperuser() (bool, error) {
+	if db.isGaussDB() {
+		// openGauss separates duties: the initial user is SYSADMIN
+		// (rolsystemadmin), not rolsuper — for everything this provider
+		// gates on it (reading pg_shadow, skipping role dances), the
+		// system administrator is the equivalent.
+		var sysadmin bool
+		if err := db.QueryRow("SELECT rolsystemadmin FROM pg_roles WHERE rolname = CURRENT_USER").Scan(&sysadmin); err != nil {
+			return false, fmt.Errorf("could not check if current user is system administrator: %w", err)
+		}
+		return sysadmin, nil
+	}
+
 	var superuser bool
 
 	if err := db.QueryRow("SELECT rolsuper FROM pg_roles WHERE rolname = CURRENT_USER").Scan(&superuser); err != nil {
@@ -331,20 +363,33 @@ func (c *Client) Connect() (*DBConnection, error) {
 	db.SetConnMaxLifetime(time.Duration(c.config.ConnMaxLifetimeSeconds) * time.Second)
 
 	defaultVersion, _ := semver.Parse(defaultExpectedPostgreSQLVersion)
-	version := &c.config.ExpectedVersion
+	version := c.config.ExpectedVersion
+	// Always fingerprint: the version string also identifies the server
+	// flavor, even when the user pinned expected_version.
+	fingerprint, isGaussDB, ferr := fingerprintCapabilities(db)
+	if ferr != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("error detecting capabilities: %w", ferr)
+	}
 	if defaultVersion.Equals(c.config.ExpectedVersion) {
-		// Version hint not set by user, need to fingerprint
-		version, err = fingerprintCapabilities(db)
-		if err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("error detecting capabilities: %w", err)
+		// Version hint not set by user: use the fingerprinted version,
+		// mapping openGauss to the PostgreSQL compatibility level it
+		// actually implements — its advertised "5.0.0" would otherwise
+		// be misread as ancient PostgreSQL by every feature gate.
+		version = fingerprint
+		if isGaussDB {
+			version = semver.MustParse("9.2.0")
+			if fingerprint.Major >= 5 {
+				version = semver.MustParse("10.0.0")
+			}
 		}
 	}
 
 	conn = &DBConnection{
 		db,
 		c,
-		*version,
+		version,
+		isGaussDB,
 	}
 
 	dbRegistryLock.Lock()
@@ -420,30 +465,35 @@ func isRetryableConnectionError(err error) bool {
 	return true
 }
 
-// fingerprintCapabilities queries PostgreSQL to populate a local catalog of
-// capabilities.  This is only run once per Client.
-func fingerprintCapabilities(db *sql.DB) (*semver.Version, error) {
+// fingerprintCapabilities queries the server to populate a local catalog of
+// capabilities.  This is only run once per Client. It returns the parsed
+// server version and whether the server is openGauss/GaussDB.
+func fingerprintCapabilities(db *sql.DB) (semver.Version, bool, error) {
 	var pgVersion string
 	err := db.QueryRow(`SELECT VERSION()`).Scan(&pgVersion)
 	if err != nil {
-		return nil, fmt.Errorf("error PostgreSQL version: %w", err)
+		return semver.Version{}, false, fmt.Errorf("error PostgreSQL version: %w", err)
 	}
 
 	// PostgreSQL 9.2.21 on x86_64-apple-darwin16.5.0, compiled by Apple LLVM version 8.1.0 (clang-802.0.42), 64-bit
 	// PostgreSQL 9.6.7, compiled by Visual C++ build 1800, 64-bit
+	// (openGauss 5.0.0 build ) compiled at 2023-04-18 09:47:39 ...
 	fields := strings.FieldsFunc(pgVersion, func(c rune) bool {
 		return unicode.IsSpace(c) || c == ','
 	})
 	if len(fields) < 2 {
-		return nil, fmt.Errorf("error determining the server version: %q", pgVersion)
+		return semver.Version{}, false, fmt.Errorf("error determining the server version: %q", pgVersion)
 	}
 
 	version, err := semver.ParseTolerant(fields[1])
 	if err != nil {
-		return nil, fmt.Errorf("error parsing version: %w", err)
+		return semver.Version{}, false, fmt.Errorf("error parsing version: %w", err)
 	}
 
-	return &version, nil
+	lower := strings.ToLower(pgVersion)
+	isGaussDB := strings.Contains(lower, "opengauss") || strings.Contains(lower, "gaussdb")
+
+	return version, isGaussDB, nil
 }
 
 func openImpersonatedGCPDBConnection(ctx context.Context, dsn string, targetServiceAccountEmail string) (*sql.DB, error) {

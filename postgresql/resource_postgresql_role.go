@@ -2,6 +2,7 @@ package postgresql
 
 import (
 	"crypto/md5"
+	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -113,6 +114,12 @@ func resourcePostgreSQLRole() *schema.Resource {
 				Optional:    true,
 				Default:     "infinity",
 				Description: "Sets a date and time after which the role's password is no longer valid",
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					// The server may return the same instant in its own
+					// timezone ("2030-01-01 08:00:00+08" vs a configured
+					// "2030-01-01 00:00:00+00"); compare instants.
+					return equivalentTimestamps(old, new)
+				},
 			},
 			roleConnLimitAttr: {
 				Type:         schema.TypeInt,
@@ -233,13 +240,23 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 		{roleConnLimitAttr, "CONNECTION LIMIT"},
 	}
 
+	// passwordSet tracks whether a PASSWORD option ends up in createOpts;
+	// openGauss mandates one on every CREATE ROLE (see below).
+	passwordSet := false
+
 	type boolOptType struct {
 		hclKey        string
 		sqlKeyEnable  string
 		sqlKeyDisable string
 	}
+	superOpt := boolOptType{roleSuperuserAttr, "SUPERUSER", "NOSUPERUSER"}
+	if db.isGaussDB() {
+		// openGauss/GaussDB replaces SUPERUSER with SYSADMIN; same
+		// semantics for everything this provider does with it.
+		superOpt = boolOptType{roleSuperuserAttr, "SYSADMIN", "NOSYSADMIN"}
+	}
 	boolOpts := []boolOptType{
-		{roleSuperuserAttr, "SUPERUSER", "NOSUPERUSER"},
+		superOpt,
 		{roleCreateDBAttr, "CREATEDB", "NOCREATEDB"},
 		{roleCreateRoleAttr, "CREATEROLE", "NOCREATEROLE"},
 		{roleInheritAttr, "INHERIT", "NOINHERIT"},
@@ -248,7 +265,8 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 		// {roleEncryptedPassAttr, "ENCRYPTED", "UNENCRYPTED"},
 	}
 
-	if db.featureSupported(featureRLS) {
+	if !db.isGaussDB() && db.featureSupported(featureRLS) {
+		// openGauss has no BYPASSRLS role option at all.
 		boolOpts = append(boolOpts, boolOptType{roleBypassRLSAttr, "BYPASSRLS", "NOBYPASSRLS"})
 	}
 
@@ -286,6 +304,7 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 
 		switch opt.hclKey {
 		case rolePasswordWOAttr, rolePasswordAttr:
+			passwordSet = true
 			if strings.ToUpper(val) == "NULL" {
 				createOpts = append(createOpts, "PASSWORD NULL")
 			} else {
@@ -330,6 +349,19 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 			valStr = opt.sqlKeyEnable
 		}
 		createOpts = append(createOpts, valStr)
+	}
+
+	if db.isGaussDB() && !passwordSet {
+		// openGauss refuses CREATE ROLE without a PASSWORD — even for
+		// NOLOGIN group roles ("The password could not be NULL"). Generate
+		// one, like the osb-opengauss-go broker does for tenant group
+		// roles. It is deliberately not stored in state: the value is
+		// irrelevant unless the user manages the password explicitly.
+		generated, gerr := generateGaussDBPassword()
+		if gerr != nil {
+			return fmt.Errorf("could not generate mandatory openGauss role password: %w", gerr)
+		}
+		createOpts = append(createOpts, fmt.Sprintf("PASSWORD '%s'", pqQuoteLiteral(generated)))
 	}
 
 	roleName := d.Get(roleNameAttr).(string)
@@ -446,9 +478,16 @@ func resourcePostgreSQLRoleReadImpl(db *DBConnection, d *schema.ResourceData) er
 
 	roleID := d.Id()
 
+	superuserColumn := "rolsuper"
+	if db.isGaussDB() {
+		// Roles are created with SYSADMIN, reflected in rolsystemadmin;
+		// rolsuper stays false for them on openGauss.
+		superuserColumn = "rolsystemadmin"
+	}
+
 	columns := []string{
 		"rolname",
-		"rolsuper",
+		superuserColumn,
 		"rolinherit",
 		"rolcreaterole",
 		"rolcreatedb",
@@ -476,7 +515,9 @@ func resourcePostgreSQLRoleReadImpl(db *DBConnection, d *schema.ResourceData) er
 		values = append(values, &roleReplication)
 	}
 
-	if db.featureSupported(featureRLS) {
+	if !db.isGaussDB() && db.featureSupported(featureRLS) {
+		// openGauss's pg_roles has no rolbypassrls column and the
+		// attribute is rejected outright anyway.
 		columns = append(columns, "rolbypassrls")
 		values = append(values, &roleBypassRLS)
 	}
@@ -663,6 +704,12 @@ func readRolePassword(db *DBConnection, d *schema.ResourceData, roleCanLogin boo
 			return statePassword, nil
 			// TODO : implement scram-sha-256 challenge request to the server
 		}
+		if strings.HasPrefix(strings.ToLower(rolePassword), "sha256") {
+			// openGauss stores PASSWORD_ENCRYPTION_TYPE_SHA256 hashes;
+			// like SCRAM there is no client-side comparison, so keep
+			// the state password rather than importing the server hash.
+			return statePassword, nil
+		}
 	}
 	return rolePassword, nil
 }
@@ -715,7 +762,7 @@ func resourcePostgreSQLRoleUpdate(db *DBConnection, d *schema.ResourceData) erro
 		return err
 	}
 
-	if err := setRoleSuperuser(txn, d); err != nil {
+	if err := setRoleSuperuser(db, txn, d); err != nil {
 		return err
 	}
 
@@ -815,6 +862,10 @@ func setRolePassword(txn *sql.Tx, d *schema.ResourceData) error {
 func setRoleBypassRLS(db *DBConnection, txn *sql.Tx, d *schema.ResourceData) error {
 	if !d.HasChange(roleBypassRLSAttr) {
 		return nil
+	}
+
+	if db.isGaussDB() {
+		return fmt.Errorf("bypass_row_level_security is not supported on openGauss/GaussDB servers")
 	}
 
 	if !db.featureSupported(featureRLS) {
@@ -945,7 +996,7 @@ func setRoleReplication(txn *sql.Tx, d *schema.ResourceData) error {
 	return nil
 }
 
-func setRoleSuperuser(txn *sql.Tx, d *schema.ResourceData) error {
+func setRoleSuperuser(db *DBConnection, txn *sql.Tx, d *schema.ResourceData) error {
 	if !d.HasChange(roleSuperuserAttr) {
 		return nil
 	}
@@ -955,6 +1006,12 @@ func setRoleSuperuser(txn *sql.Tx, d *schema.ResourceData) error {
 	if superuser {
 		tok = "SUPERUSER"
 	}
+	if db.isGaussDB() {
+		tok = "NOSYSADMIN"
+		if superuser {
+			tok = "SYSADMIN"
+		}
+	}
 	roleName := d.Get(roleNameAttr).(string)
 	sql := fmt.Sprintf("ALTER ROLE %s WITH %s", pqQuoteIdentifier(roleName), tok)
 	if _, err := txn.Exec(sql); err != nil {
@@ -962,6 +1019,24 @@ func setRoleSuperuser(txn *sql.Tx, d *schema.ResourceData) error {
 	}
 
 	return nil
+}
+
+// generateGaussDBPassword returns a random 24-character password satisfying
+// openGauss's default complexity policy (at least three character classes),
+// for roles created without a user-provided password.
+func generateGaussDBPassword() (string, error) {
+	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	out := make([]byte, 24)
+	buf := make([]byte, 24)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		out[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	// Pin three character classes so the password always passes the policy.
+	out[21], out[22], out[23] = 'q', 'T', '7'
+	return string(out), nil
 }
 
 func setRoleValidUntil(txn *sql.Tx, d *schema.ResourceData) error {

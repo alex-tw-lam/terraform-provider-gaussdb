@@ -64,12 +64,26 @@ func TestGaussDBConnectionSmoke(t *testing.T) {
 	if err := db.QueryRow("SELECT version()").Scan(&version); err != nil {
 		t.Fatalf("SELECT version() failed: %v", err)
 	}
-	var encryptionType string
-	if err := db.QueryRow("SHOW password_encryption_type").Scan(&encryptionType); err != nil {
-		t.Fatalf("SHOW password_encryption_type failed: %v", err)
+	// password_encryption_type only exists on openGauss/GaussDB; scanning
+	// pg_settings avoids both openGauss's missing two-argument current_setting
+	// and NULL scans on vanilla PostgreSQL. password_encryption shows the
+	// server-side hash default (scram-sha-256 on modern PostgreSQL).
+	encryptionSettings := map[string]string{}
+	rows, err := db.Query("SELECT name, setting FROM pg_catalog.pg_settings WHERE name IN ('password_encryption_type', 'password_encryption')")
+	if err != nil {
+		t.Fatalf("reading password encryption settings failed: %v", err)
 	}
-	t.Logf("connected: version=%q password_encryption_type=%q", version, encryptionType)
-	if encryptionType != "2" {
-		t.Logf("NOTE: password_encryption_type=%q — sha256 login is exercised with type 2", encryptionType)
+	for rows.Next() {
+		var name, setting string
+		if err := rows.Scan(&name, &setting); err != nil {
+			t.Fatalf("scanning password encryption settings failed: %v", err)
+		}
+		encryptionSettings[name] = setting
+	}
+	rows.Close()
+	t.Logf("connected: version=%q password_encryption_type=%q password_encryption=%q",
+		version, encryptionSettings["password_encryption_type"], encryptionSettings["password_encryption"])
+	if encryptionSettings["password_encryption_type"] != "2" && encryptionSettings["password_encryption"] != "scram-sha-256" {
+		t.Logf("NOTE: server neither uses openGauss sha256 (type 2) nor PostgreSQL scram-sha-256; auth used md5 or cleartext")
 	}
 }

@@ -28,7 +28,14 @@ func resourcePostgreSQLPhysicalReplicationSlot() *schema.Resource {
 
 func resourcePostgreSQLPhysicalReplicationSlotCreate(db *DBConnection, d *schema.ResourceData) error {
 	name := d.Get("name").(string)
-	sql := "SELECT FROM pg_create_physical_replication_slot($1)"
+	// NB: bare "SELECT FROM func()" is PostgreSQL-only syntax; openGauss
+	// rejects it. "SELECT func(...)" is portable to both. openGauss's
+	// variant additionally takes dummy_standby (false = a regular physical
+	// slot; true is for dummy standby log recycling).
+	sql := "SELECT pg_create_physical_replication_slot($1)"
+	if db.isGaussDB() {
+		sql = "SELECT pg_create_physical_replication_slot($1, false)"
+	}
 	if _, err := db.Exec(sql, name); err != nil {
 		return fmt.Errorf("could not create physical ReplicationSlot %s: %w", name, err)
 	}

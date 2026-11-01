@@ -3,10 +3,12 @@ package postgresql
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
+	"github.com/HuaweiCloudDeveloper/gaussdb-go/gaussdbconn"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
@@ -217,9 +219,16 @@ func resourcePostgreSQLFunctionExists(db *DBConnection, d *schema.ResourceData) 
 	}
 	defer deferredRollback(txn)
 
-	query := fmt.Sprintf("SELECT to_regprocedure('%s') IS NOT NULL AS functionExists", functionSignature)
-
+	// NB: to_regprocedure() does not exist on openGauss; the plain
+	// regprocedure cast does (on both flavors). A missing function makes
+	// the cast fail with SQLSTATE 42883, which is exactly the
+	// "does not exist" answer to_regprocedure would give as NULL.
+	query := fmt.Sprintf("SELECT ('%s')::regprocedure IS NOT NULL AS functionExists", pqQuoteLiteral(functionSignature))
 	if err := txn.QueryRow(query).Scan(&functionExists); err != nil {
+		var gaussErr *gaussdbconn.GaussdbError
+		if errors.As(err, &gaussErr) && gaussErr.SQLState() == "42883" {
+			return false, nil
+		}
 		return false, err
 	}
 
@@ -260,10 +269,12 @@ func resourcePostgreSQLFunctionReadImpl(db *DBConnection, d *schema.ResourceData
 
 	var funcDefinition string
 
+	// NB: $1::regprocedure instead of to_regprocedure($1), which openGauss
+	// does not implement; identical resolution on PostgreSQL.
 	query := `SELECT pg_get_functiondef(p.oid::regproc) funcDefinition ` +
 		`FROM pg_proc p ` +
 		`LEFT JOIN pg_namespace n ON p.pronamespace = n.oid ` +
-		`WHERE p.oid = to_regprocedure($1)`
+		`WHERE p.oid = $1::regprocedure`
 
 	txn, err := startTransaction(db.client, databaseName)
 	if err != nil {

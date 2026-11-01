@@ -242,6 +242,7 @@ func Provider() *schema.Provider {
 			"postgresql_server":                    resourcePostgreSQLServer(),
 			"postgresql_user_mapping":              resourcePostgreSQLUserMapping(),
 			"postgresql_security_label":            resourcePostgreSQLSecurityLabel(),
+			"postgresql_tablespace":                resourcePostgreSQLTablespace(),
 		},
 
 		DataSourcesMap: map[string]*schema.Resource{

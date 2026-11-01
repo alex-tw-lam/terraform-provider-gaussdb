@@ -167,7 +167,9 @@ func resourcePostgreSQLServerReadImpl(db *DBConnection, d *schema.ResourceData) 
 
 	var serverType, serverVersion, serverOwner, serverFDW string
 	var serverOptions pgStringArray
-	query := `SELECT COALESCE(fs.srvtype, ''), COALESCE(fs.srvversion, ''), fs.srvowner::regrole, fs.srvoptions, w.fdwname ` +
+	// NB: pg_get_userbyid() instead of the ::regrole cast, which openGauss
+	// does not implement; identical result on PostgreSQL.
+	query := `SELECT COALESCE(fs.srvtype, ''), COALESCE(fs.srvversion, ''), pg_get_userbyid(fs.srvowner), fs.srvoptions, w.fdwname ` +
 		`FROM pg_foreign_server fs JOIN pg_foreign_data_wrapper w on w.oid = fs.srvfdw ` +
 		`WHERE fs.srvname = $1`
 	err = txn.QueryRow(query, serverName).Scan(&serverType, &serverVersion, &serverOwner, &serverOptions, &serverFDW)

@@ -16,6 +16,7 @@ const (
 	dbAllowConnsAttr       = "allow_connections"
 	dbCTypeAttr            = "lc_ctype"
 	dbCollationAttr        = "lc_collate"
+	dbCompatibilityAttr    = "db_compatibility"
 	dbConnLimitAttr        = "connection_limit"
 	dbEncodingAttr         = "encoding"
 	dbIsTemplateAttr       = "is_template"
@@ -24,6 +25,9 @@ const (
 	dbTablespaceAttr       = "tablespace_name"
 	dbTemplateAttr         = "template"
 	dbAlterObjectOwnership = "alter_object_ownership"
+
+	dbRevokePublicConnectAttr = "revoke_public_connect"
+	dbEnablePrivateObjectAttr = "enable_private_object"
 )
 
 func resourcePostgreSQLDatabase() *schema.Resource {
@@ -107,6 +111,25 @@ func resourcePostgreSQLDatabase() *schema.Resource {
 				Optional:    true,
 				Default:     false,
 				Description: "If true, the owner of already existing objects will change if the owner changes",
+			},
+			dbCompatibilityAttr: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				Description:  "openGauss/GaussDB DBCOMPATIBILITY of the new database: PG, A (Oracle), B (MySQL) or C (Teradata). Only \"PG\" is accepted against vanilla PostgreSQL (where it is a no-op). NB: openGauss defaults new databases to A (Oracle) when unset.",
+				ValidateFunc: validation.StringInSlice([]string{"PG", "A", "B", "C"}, true),
+			},
+			dbRevokePublicConnectAttr: {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "If true, PUBLIC loses its default CONNECT privilege on this database (tenant isolation; plain SQL on all flavors)",
+			},
+			dbEnablePrivateObjectAttr: {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "openGauss/GaussDB only: run ALTER DATABASE ... ENABLE PRIVATE OBJECT so users only see objects they may access. Not supported on vanilla PostgreSQL; the server exposes no readable flag, so drift on this attribute cannot be detected",
 			},
 		},
 	}
@@ -225,9 +248,34 @@ func createDatabase(db *DBConnection, d *schema.ResourceData) error {
 		fmt.Fprint(b, " IS_TEMPLATE ", val)
 	}
 
+	if compat, ok := d.GetOk(dbCompatibilityAttr); ok {
+		v := strings.ToUpper(compat.(string))
+		if db.isGaussDB() {
+			fmt.Fprintf(b, " DBCOMPATIBILITY '%s'", pqQuoteLiteral(v))
+		} else if v != "PG" {
+			return fmt.Errorf("db_compatibility %q is only supported on openGauss/GaussDB servers; only \"PG\" is portable to PostgreSQL", v)
+		}
+	}
+
 	sql := b.String()
 	if _, err := db.Exec(sql); err != nil {
 		return fmt.Errorf("error creating database %q: %w", dbName, err)
+	}
+
+	if d.Get(dbRevokePublicConnectAttr).(bool) {
+		revokeSQL := fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM PUBLIC", pqQuoteIdentifier(dbName))
+		if _, err := db.Exec(revokeSQL); err != nil {
+			return fmt.Errorf("error revoking CONNECT from PUBLIC on database %q: %w", dbName, err)
+		}
+	}
+
+	if d.Get(dbEnablePrivateObjectAttr).(bool) {
+		if !db.isGaussDB() {
+			return fmt.Errorf("enable_private_object is only supported on openGauss/GaussDB servers")
+		}
+		if err := setPrivateObject(db, dbName, true); err != nil {
+			return err
+		}
 	}
 
 	// Set err outside of the return so that the deferred revoke can override err
@@ -391,6 +439,29 @@ func resourcePostgreSQLDatabaseReadImpl(db *DBConnection, d *schema.ResourceData
 		d.Set(dbIsTemplateAttr, dbIsTemplate)
 	}
 
+	if db.isGaussDB() {
+		var dbCompatibility string
+		if err := db.QueryRow(`SELECT d.datcompatibility FROM pg_catalog.pg_database d WHERE d.datname = $1`, dbId).Scan(&dbCompatibility); err != nil {
+			return fmt.Errorf("error reading DBCOMPATIBILITY property for DATABASE: %w", err)
+		}
+		d.Set(dbCompatibilityAttr, dbCompatibility)
+	}
+
+	// PUBLIC's CONNECT: a NULL datacl means defaults (PUBLIC may connect);
+	// once materialized, count the PUBLIC (grantee 0) CONNECT entries.
+	// Plain aclexplode scalar subquery — openGauss has no LATERAL.
+	var dataclNull bool
+	var publicConnectCount int
+	err = db.QueryRow(`SELECT d.datacl IS NULL, coalesce((SELECT count(*) FROM aclexplode(d.datacl) WHERE grantee = 0 AND privilege_type = 'CONNECT'), 0)
+		FROM pg_catalog.pg_database d WHERE d.datname = $1`, dbId).Scan(&dataclNull, &publicConnectCount)
+	if err != nil {
+		return fmt.Errorf("error reading CONNECT privilege of PUBLIC for DATABASE: %w", err)
+	}
+	d.Set(dbRevokePublicConnectAttr, !dataclNull && publicConnectCount == 0)
+
+	// enable_private_object is write-only on openGauss: the server exposes
+	// no readable flag, so the state keeps whatever the config says.
+
 	return nil
 }
 
@@ -423,9 +494,78 @@ func resourcePostgreSQLDatabaseUpdate(db *DBConnection, d *schema.ResourceData) 
 		return err
 	}
 
+	if err := setRevokePublicConnect(db, d); err != nil {
+		return err
+	}
+
+	if err := setEnablePrivateObject(db, d); err != nil {
+		return err
+	}
+
 	// Empty values: ALTER DATABASE name RESET configuration_parameter;
 
 	return resourcePostgreSQLDatabaseReadImpl(db, d)
+}
+
+// setRevokePublicConnect applies or restores PUBLIC's default CONNECT
+// privilege on the database.
+func setRevokePublicConnect(db *DBConnection, d *schema.ResourceData) error {
+	if !d.HasChange(dbRevokePublicConnectAttr) {
+		return nil
+	}
+
+	revoke := d.Get(dbRevokePublicConnectAttr).(bool)
+	dbName := d.Get(dbNameAttr).(string)
+	var sql string
+	if revoke {
+		sql = fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM PUBLIC", pqQuoteIdentifier(dbName))
+	} else {
+		sql = fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO PUBLIC", pqQuoteIdentifier(dbName))
+	}
+	if _, err := db.Exec(sql); err != nil {
+		return fmt.Errorf("error updating CONNECT privilege of PUBLIC on database %q: %w", dbName, err)
+	}
+
+	return nil
+}
+
+// setEnablePrivateObject toggles openGauss's per-database private-object
+// isolation.
+func setEnablePrivateObject(db *DBConnection, d *schema.ResourceData) error {
+	if !d.HasChange(dbEnablePrivateObjectAttr) {
+		return nil
+	}
+
+	enabled := d.Get(dbEnablePrivateObjectAttr).(bool)
+	if !db.isGaussDB() {
+		if !enabled {
+			// Was never turned on; nothing to disable.
+			return nil
+		}
+		return fmt.Errorf("enable_private_object is only supported on openGauss/GaussDB servers")
+	}
+
+	return setPrivateObject(db, d.Get(dbNameAttr).(string), enabled)
+}
+
+// setPrivateObject runs ALTER DATABASE ... ENABLE/DISABLE PRIVATE OBJECT.
+// openGauss refuses this statement cross-database, so it must execute on a
+// connection to the target database itself.
+func setPrivateObject(db *DBConnection, dbName string, enabled bool) error {
+	target, err := initConnection(db.client, dbName)
+	if err != nil {
+		return err
+	}
+	action := "DISABLE"
+	if enabled {
+		action = "ENABLE"
+	}
+	sql := fmt.Sprintf("ALTER DATABASE %s %s PRIVATE OBJECT", pqQuoteIdentifier(dbName), action)
+	if _, err := target.Exec(sql); err != nil {
+		return fmt.Errorf("error running %s PRIVATE OBJECT on database %q: %w", action, dbName, err)
+	}
+
+	return nil
 }
 
 func setDBName(db QueryAble, d *schema.ResourceData) error {
