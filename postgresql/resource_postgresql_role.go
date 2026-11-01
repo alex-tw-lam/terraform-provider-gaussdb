@@ -249,6 +249,12 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 		sqlKeyEnable  string
 		sqlKeyDisable string
 	}
+	if db.isGaussDB() && d.Get(roleBypassRLSAttr).(bool) {
+		// openGauss has no BYPASSRLS at all; fail at create time rather
+		// than silently creating the role without it.
+		return fmt.Errorf("bypass_row_level_security is not supported on openGauss/GaussDB servers")
+	}
+
 	superOpt := boolOptType{roleSuperuserAttr, "SUPERUSER", "NOSUPERUSER"}
 	if db.isGaussDB() {
 		// openGauss/GaussDB replaces SUPERUSER with SYSADMIN; same
@@ -269,7 +275,6 @@ func resourcePostgreSQLRoleCreate(db *DBConnection, d *schema.ResourceData) erro
 		// openGauss has no BYPASSRLS role option at all.
 		boolOpts = append(boolOpts, boolOptType{roleBypassRLSAttr, "BYPASSRLS", "NOBYPASSRLS"})
 	}
-
 	if db.featureSupported(featureReplication) {
 		boolOpts = append(boolOpts, boolOptType{roleReplicationAttr, "REPLICATION", "NOREPLICATION"})
 	}

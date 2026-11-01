@@ -189,6 +189,13 @@ func resourcePostgreSQLFunctionCreate(db *DBConnection, d *schema.ResourceData) 
 		)
 	}
 
+	if db.isGaussDB() && d.Get(funcParallelAttr).(string) != defaultFunctionParallel {
+		// openGauss CREATE FUNCTION has no PARALLEL clause (and no
+		// proparallel catalog column); fail clearly instead of with a
+		// raw syntax error.
+		return fmt.Errorf("parallel is not supported on openGauss/GaussDB servers")
+	}
+
 	if err := createFunction(db, d, false); err != nil {
 		return err
 	}
@@ -376,6 +383,10 @@ func resourcePostgreSQLFunctionUpdate(db *DBConnection, d *schema.ResourceData) 
 			"postgresql_function resource is not supported for this Postgres version (%s)",
 			db.version,
 		)
+	}
+
+	if db.isGaussDB() && d.Get(funcParallelAttr).(string) != defaultFunctionParallel {
+		return fmt.Errorf("parallel is not supported on openGauss/GaussDB servers")
 	}
 
 	if err := createFunction(db, d, true); err != nil {

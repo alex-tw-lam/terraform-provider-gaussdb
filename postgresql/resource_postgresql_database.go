@@ -115,8 +115,9 @@ func resourcePostgreSQLDatabase() *schema.Resource {
 			dbCompatibilityAttr: {
 				Type:         schema.TypeString,
 				Optional:     true,
+				Computed:     true,
 				ForceNew:     true,
-				Description:  "openGauss/GaussDB DBCOMPATIBILITY of the new database: PG, A (Oracle), B (MySQL) or C (Teradata). Only \"PG\" is accepted against vanilla PostgreSQL (where it is a no-op). NB: openGauss defaults new databases to A (Oracle) when unset.",
+				Description:  "openGauss/GaussDB DBCOMPATIBILITY of the new database: PG, A (Oracle), B (MySQL) or C (Teradata). Only \"PG\" is accepted against vanilla PostgreSQL (where it is a no-op). NB: openGauss defaults new databases to A (Oracle) when unset — the read reflects that default (Computed), so leaving it unconfigured does not force replacement.",
 				ValidateFunc: validation.StringInSlice([]string{"PG", "A", "B", "C"}, true),
 			},
 			dbRevokePublicConnectAttr: {
