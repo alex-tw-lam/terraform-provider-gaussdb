@@ -1,5 +1,13 @@
 # openGauss 5.0 compatibility matrix
 
+> **Status**: this matrix documents the *baseline* (pre-dialect) state.
+> Every fixable gap below — role dialect, database clauses/params, slots,
+> function/server read paths, plus the new `postgresql_tablespace`
+> resource — has since been implemented and live-verified; see "Done:
+> GaussDB dialect (Phase 2)" in [GAUSSDB.md](../GAUSSDB.md). Only
+> `postgresql_subscription` and `postgresql_security_label` remain
+> unsupported (server-side).
+
 Every provider resource (and data source) was exercised against a live
 openGauss 5.0.0 container (`opengauss/opengauss:5.0.0`, `password_encryption_type=2`,
 `wal_level=logical`) using real Terraform 1.17.1 runs through dev_overrides,
