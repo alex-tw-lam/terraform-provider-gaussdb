@@ -63,13 +63,6 @@ resource "gaussdb_grant" "connect_and_create_schemas" {
   role        = gaussdb_role.tenant_grp.name
 }
 
-resource "gaussdb_grant" "connect_app" {
-  database    = gaussdb_database.tenant_db.name
-  object_type = "database"
-  privileges  = ["CONNECT"]
-  role        = gaussdb_role.app.name
-}
-
 locals {
   seed_endpoints = [for h in var.seed_hosts : can(regex(":[0-9]+$", h)) ? h : "${h}:${var.db_port}"]
   seed_list      = join(",", local.seed_endpoints)

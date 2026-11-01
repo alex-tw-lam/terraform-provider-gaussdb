@@ -144,5 +144,5 @@ does not inherit CONNECT" is wrong. Two real behaviors to design around:
 - Owner-implicit privileges did not cover member logins in the experiment
   (REVOKE ALL on the owner with no explicit `c` left members refused), so
   after `revoke_public_connect` the group role needs the explicit CONNECT
-  grant; every member then inherits it. The tenant module also grants
-  CONNECT directly to the application role as defense in depth.
+  grant; every member then inherits it (verified: a member of a group
+  holding an explicit `c` connects fine).
